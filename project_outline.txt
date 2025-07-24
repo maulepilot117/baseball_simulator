@@ -1,0 +1,109 @@
+# Baseball Simulation Project Structure
+
+```
+baseball-simulation/
+├── docker-compose.yml
+├── k8s/
+│   ├── namespace.yaml
+│   ├── postgres/
+│   │   ├── deployment.yaml
+│   │   ├── service.yaml
+│   │   ├── pvc.yaml
+│   │   └── configmap.yaml
+│   ├── api-gateway/
+│   │   ├── deployment.yaml
+│   │   └── service.yaml
+│   ├── sim-engine/
+│   │   ├── deployment.yaml
+│   │   └── service.yaml
+│   ├── data-fetcher/
+│   │   ├── deployment.yaml
+│   │   └── cronjob.yaml
+│   └── frontend/
+│       ├── deployment.yaml
+│       └── service.yaml
+├── api-gateway/
+│   ├── Dockerfile
+│   ├── go.mod
+│   ├── go.sum
+│   ├── main.go
+│   ├── handlers/
+│   ├── middleware/
+│   └── config/
+├── sim-engine/
+│   ├── Dockerfile
+│   ├── go.mod
+│   ├── go.sum
+│   ├── main.go
+│   ├── simulation/
+│   │   ├── pitch.go
+│   │   ├── at_bat.go
+│   │   ├── inning.go
+│   │   ├── game.go
+│   │   └── monte_carlo.go
+│   ├── models/
+│   └── utils/
+├── data-fetcher/
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   ├── main.py
+│   ├── fetchers/
+│   │   ├── __init__.py
+│   │   ├── baseball_reference.py
+│   │   └── mlb_stats_api.py
+│   ├── models/
+│   ├── db/
+│   └── utils/
+├── frontend/
+│   ├── Dockerfile
+│   ├── deno.json
+│   ├── src/
+│   │   ├── main.tsx
+│   │   ├── App.tsx
+│   │   ├── components/
+│   │   ├── pages/
+│   │   ├── services/
+│   │   └── utils/
+│   └── public/
+├── database/
+│   ├── init/
+│   │   └── 01-schema.sql
+│   └── migrations/
+└── scripts/
+    ├── setup.sh
+    └── test.sh
+```
+
+## Component Responsibilities
+
+### 1. API Gateway (Go)
+- REST API endpoints
+- Request routing
+- Authentication (future)
+- Rate limiting
+- WebSocket support (future)
+
+### 2. Simulation Engine (Go)
+- Pitch-by-pitch simulation
+- Monte Carlo analysis (1000 runs)
+- Factor integration (weather, stadium, etc.)
+- High-performance concurrent processing
+
+### 3. Data Fetcher (Python)
+- Baseball Reference scraping
+- MLB Stats API integration
+- Data validation and cleaning
+- Database population
+- Scheduled updates (daily)
+
+### 4. Frontend (React + Deno v2)
+- Game selection interface
+- Simulation triggers
+- Results visualization
+- Historical analysis views
+
+### 5. PostgreSQL Database
+- Optimized for time-series data
+- Partitioned tables for performance
+- JSON columns for flexible stats
+- Materialized views for common queries
