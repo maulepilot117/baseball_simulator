@@ -15,6 +15,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/jackc/pgx/v5/pgxpool"
+	
+	"./models"
+	"./simulation"
 )
 
 type Server struct {
@@ -22,7 +25,7 @@ type Server struct {
 	router       *mux.Router
 	httpServer   *http.Server
 	config       *Config
-	simEngine    *SimulationEngine
+	simEngine    *simulation.SimulationEngine
 }
 
 type Config struct {
@@ -36,11 +39,7 @@ type Config struct {
 	SimulationRuns int
 }
 
-type SimulationEngine struct {
-	db             *pgxpool.Pool
-	workers        int
-	simulationRuns int
-}
+// Remove the local definition since we're importing from simulation package
 
 type SimulationRequest struct {
 	GameID         string                 `json:"game_id"`
@@ -126,11 +125,7 @@ func NewServer(config *Config) (*Server, error) {
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
-	simEngine := &SimulationEngine{
-		db:             db,
-		workers:        config.Workers,
-		simulationRuns: config.SimulationRuns,
-	}
+	simEngine := simulation.NewSimulationEngine(db, config.Workers, config.SimulationRuns)
 
 	s := &Server{
 		db:        db,
@@ -264,6 +259,23 @@ func (s *Server) simulationStatusHandler(w http.ResponseWriter, r *http.Request)
 	vars := mux.Vars(r)
 	runID := vars["id"]
 
+	// First check in-memory status
+	if runStatus, exists := s.simEngine.GetRunStatus(runID); exists {
+		status := SimulationStatus{
+			RunID:         runStatus.RunID,
+			GameID:        runStatus.GameID,
+			Status:        runStatus.Status,
+			TotalRuns:     runStatus.TotalRuns,
+			CompletedRuns: runStatus.CompletedRuns,
+			Progress:      float64(runStatus.CompletedRuns) / float64(runStatus.TotalRuns),
+			CreatedAt:     runStatus.StartTime,
+			CompletedAt:   runStatus.CompletedTime,
+		}
+		writeJSON(w, status)
+		return
+	}
+
+	// Fallback to database lookup
 	var status SimulationStatus
 	var gameID string
 	var config json.RawMessage
@@ -307,29 +319,31 @@ func (s *Server) simulationResultHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Get aggregated results
-	var result SimulationResult
-	var homeScoreDist, awayScoreDist json.RawMessage
-	
-	err = s.db.QueryRow(r.Context(), `
-		SELECT run_id, home_win_probability, away_win_probability, 
-		       expected_home_score, expected_away_score,
-		       home_score_distribution, away_score_distribution
-		FROM simulation_aggregates
-		WHERE run_id = $1
-	`, runID).Scan(&result.RunID, &result.HomeWinProbability, &result.AwayWinProbability,
-		&result.ExpectedHomeScore, &result.ExpectedAwayScore,
-		&homeScoreDist, &awayScoreDist)
-	
+	// Get aggregated results using the simulation engine
+	aggregatedResult, err := s.simEngine.GetRunResult(r.Context(), runID)
 	if err != nil {
 		log.Printf("Failed to get simulation results: %v", err)
 		http.Error(w, "Results not available", http.StatusInternalServerError)
 		return
 	}
 
-	// Parse score distributions
-	json.Unmarshal(homeScoreDist, &result.HomeScoreDistribution)
-	json.Unmarshal(awayScoreDist, &result.AwayScoreDistribution)
+	// Convert to response format
+	result := SimulationResult{
+		RunID:                 aggregatedResult.RunID,
+		HomeWinProbability:   aggregatedResult.HomeWinProbability,
+		AwayWinProbability:   aggregatedResult.AwayWinProbability,
+		ExpectedHomeScore:    aggregatedResult.ExpectedHomeScore,
+		ExpectedAwayScore:    aggregatedResult.ExpectedAwayScore,
+		HomeScoreDistribution: aggregatedResult.HomeScoreDistribution,
+		AwayScoreDistribution: aggregatedResult.AwayScoreDistribution,
+		Metadata: map[string]interface{}{
+			"total_simulations":      aggregatedResult.TotalSimulations,
+			"average_game_duration":  aggregatedResult.AverageGameDuration,
+			"average_pitches":        aggregatedResult.AveragePitches,
+			"high_leverage_events":   len(aggregatedResult.HighLeverageEvents),
+			"statistics":            aggregatedResult.Statistics,
+		},
+	}
 
 	writeJSON(w, result)
 }
