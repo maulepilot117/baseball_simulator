@@ -1,5 +1,5 @@
 # Multi-stage build for React/Deno frontend
-FROM denoland/deno:2.1.4 AS base
+FROM denoland/deno:latest AS base
 
 # Set working directory
 WORKDIR /app
@@ -15,18 +15,25 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
-# Create non-root user
+# Copy package files first to cache dependencies
+COPY deno.json deps.ts ./
+
+# Cache dependencies
+RUN deno cache --reload deps.ts
+
+# Copy source code
+COPY . .
+
+# Create non-root user and set permissions
 RUN useradd -m -u 1000 frontenduser && chown -R frontenduser:frontenduser /app
 USER frontenduser
-
-# The source code will be mounted as a volume
 
 # Expose port
 EXPOSE 3000
 
-# Health check for development
+# Health check for development (simplified)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:3000/health || exit 1
+    CMD curl -f http://localhost:3000/ || exit 1
 
 # Run the development server
 CMD ["deno", "task", "dev"]
@@ -43,7 +50,7 @@ RUN apt-get update && apt-get install -y \
     && apt-get clean
 
 # Copy package files and dependencies
-COPY deno.json deno.lock deps.ts ./
+COPY deno.json deps.ts ./
 
 # Cache dependencies
 RUN deno cache --reload deps.ts

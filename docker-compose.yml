@@ -156,7 +156,7 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-      target: production
+      target: development
     container_name: baseball-frontend
     environment:
       - REACT_APP_API_BASE_URL=${API_BASE_URL:-http://localhost:8080/api/v1}

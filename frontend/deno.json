@@ -5,9 +5,7 @@
   "exports": "./src/main.tsx",
   "tasks": {
     "dev": "deno run --allow-net --allow-read --allow-write --allow-env --watch dev.ts",
-    "build": "deno run --allow-net --allow-read --allow-write --allow-env scripts/build.ts",
     "start": "deno task dev",
-    "preview": "deno run --allow-net --allow-read static-server.ts",
     "test": "deno test --allow-all"
   },
   "imports": {
