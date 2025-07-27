@@ -1,0 +1,22 @@
+{
+  "name": "baseball-simulation-frontend",
+  "version": "1.0.0",
+  "description": "Baseball simulation frontend built with Deno and React",
+  "tasks": {
+    "dev": "deno run --allow-net --allow-read --allow-write --allow-env src/main.tsx",
+    "build": "echo 'Build placeholder - implement React build process' && mkdir -p dist && echo '<h1>Baseball Simulation Frontend</h1><p>Coming soon...</p>' > dist/index.html",
+    "start": "deno task dev",
+    "test": "deno test --allow-all"
+  },
+  "imports": {
+    "react": "https://esm.sh/react@18.2.0",
+    "react-dom": "https://esm.sh/react-dom@18.2.0",
+    "react-router-dom": "https://esm.sh/react-router-dom@6.8.1"
+  },
+  "compilerOptions": {
+    "allowJs": true,
+    "lib": ["deno.window"],
+    "strict": true,
+    "jsx": "react-jsx"
+  }
+}
