@@ -48,10 +48,12 @@ This is a microservices-based baseball simulation system with the following comp
 - Optimized connection pooling across services
 
 ### Key Technologies
-- **Go**: Gorilla Mux for routing, pgx for PostgreSQL connectivity
-- **Python**: FastAPI for async HTTP, asyncpg for database access
+- **Go 1.24**: Gorilla Mux for routing, pgx for PostgreSQL connectivity
+- **Python 3.13**: FastAPI for async HTTP, asyncpg for database access
+- **Deno 2.1**: Modern TypeScript/JavaScript runtime for frontend
+- **Node.js 22**: LTS version for build tools and compatibility
 - **Docker**: Containerized services with docker-compose orchestration
-- **PostgreSQL**: Tuned for high-performance analytics workloads
+- **PostgreSQL 15**: Tuned for high-performance analytics workloads
 
 ## Service Endpoints
 

@@ -1,0 +1,84 @@
+# Development override configuration
+# Use with: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+  # Data Fetcher with development settings
+  data-fetcher:
+    build:
+      target: development
+    volumes:
+      - ./data-fetcher:/app
+      - /app/__pycache__
+    environment:
+      - DEBUG=true
+      - LOG_LEVEL=debug
+      - HOT_RELOAD=true
+    command: ["python", "main.py", "--reload"]
+
+  # API Gateway with development settings
+  api-gateway:
+    build:
+      target: development
+    volumes:
+      - ./api-gateway:/app
+    environment:
+      - GIN_MODE=debug
+      - LOG_LEVEL=debug
+      - HOT_RELOAD=true
+    ports:
+      - "8080:8080"
+      # Additional port for debugging
+      - "40000:40000"
+
+  # Simulation Engine with development settings
+  sim-engine:
+    volumes:
+      - ./sim-engine:/app
+    environment:
+      - LOG_LEVEL=debug
+      - DEBUG=true
+    ports:
+      - "8081:8081"
+      # Additional port for debugging
+      - "40001:40001"
+
+  # Frontend with development settings
+  frontend:
+    build:
+      target: development
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - NODE_ENV=development
+      - REACT_APP_API_BASE_URL=http://localhost:8080/api/v1
+      - HOT_RELOAD=true
+    ports:
+      - "3000:3000"
+      # Vite HMR port
+      - "24678:24678"
+
+  # Database with development settings
+  database:
+    environment:
+      - POSTGRES_DB=baseball_sim_dev
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+      - ./database/database/init:/docker-entrypoint-initdb.d
+      - ./database/dev-data:/docker-entrypoint-initdb.d/dev-data
+    ports:
+      - "5432:5432"
+
+  # Development tools
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: baseball-mailhog
+    ports:
+      - "1025:1025"  # SMTP
+      - "8025:8025"  # Web UI
+    networks:
+      - baseball-network
+
+volumes:
+  postgres_dev_data:
+    driver: local
