@@ -191,6 +191,70 @@ CREATE TABLE IF NOT EXISTS simulation_aggregates (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+-- Season aggregated statistics table
+CREATE TABLE IF NOT EXISTS player_season_aggregates (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    player_id UUID REFERENCES players(id),
+    season INTEGER NOT NULL,
+    stats_type VARCHAR(20) NOT NULL, -- batting, pitching, fielding
+    aggregated_stats JSONB NOT NULL, -- season totals and averages
+    games_played INTEGER DEFAULT 0,
+    last_updated TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(player_id, season, stats_type)
+);
+
+-- Fielding plays table for advanced defensive metrics
+CREATE TABLE IF NOT EXISTS fielding_plays (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    game_id UUID REFERENCES games(id),
+    player_id UUID REFERENCES players(id),
+    game_date DATE NOT NULL,
+    inning INTEGER NOT NULL,
+    inning_half VARCHAR(10) NOT NULL,
+    play_type VARCHAR(20) NOT NULL, -- ground_ball, fly_ball, line_drive, popup
+    hit_location POINT, -- x, y coordinates on field
+    hang_time DECIMAL(3,2), -- seconds for fly balls
+    exit_velocity DECIMAL(4,1), -- mph
+    result VARCHAR(20) NOT NULL, -- out, hit, error, foul
+    difficulty_score DECIMAL(3,2), -- 0.00 to 1.00
+    fielding_zone VARCHAR(10), -- zone identifier (1-9, foul, etc)
+    assist_player_ids UUID[], -- array of player UUIDs for assists
+    runner_advancement JSONB, -- base running data
+    outs_on_play INTEGER DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    PRIMARY KEY (id, game_date)
+) PARTITION BY RANGE (game_date);
+
+-- Create monthly partitions for fielding plays (2025)
+DO $$
+BEGIN
+    FOR i IN 1..11 LOOP
+        EXECUTE format(
+            'CREATE TABLE IF NOT EXISTS fielding_plays_2025_%s PARTITION OF fielding_plays 
+             FOR VALUES FROM (''2025-%s-01'') TO (''2025-%s-01'')',
+            lpad(i::text, 2, '0'),
+            lpad(i::text, 2, '0'),
+            lpad((i+1)::text, 2, '0')
+        );
+    END LOOP;
+    -- December needs special handling
+    EXECUTE 'CREATE TABLE IF NOT EXISTS fielding_plays_2025_12 PARTITION OF fielding_plays 
+             FOR VALUES FROM (''2025-12-01'') TO (''2026-01-01'')';
+END $$;
+
+-- Park factors table for fielding adjustments
+CREATE TABLE IF NOT EXISTS park_factors (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    stadium_id UUID REFERENCES stadiums(id),
+    season INTEGER NOT NULL,
+    factor_type VARCHAR(20) NOT NULL, -- hr, doubles, triples, errors, etc
+    factor_value DECIMAL(4,3) NOT NULL, -- 1.000 = neutral
+    handedness VARCHAR(5), -- L, R, or NULL for both
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(stadium_id, season, factor_type, handedness)
+);
+
 -- Injuries table
 CREATE TABLE IF NOT EXISTS injuries (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -212,6 +276,13 @@ CREATE INDEX idx_pitches_pitcher ON pitches(pitcher_id);
 CREATE INDEX idx_pitches_batter ON pitches(batter_id);
 CREATE INDEX idx_simulation_results_run ON simulation_results(run_id);
 CREATE INDEX idx_injuries_player_active ON injuries(player_id, status) WHERE status = 'active';
+CREATE INDEX idx_player_season_aggregates_player_season ON player_season_aggregates(player_id, season);
+CREATE INDEX idx_player_season_aggregates_type ON player_season_aggregates(stats_type);
+CREATE INDEX idx_fielding_plays_player ON fielding_plays(player_id);
+CREATE INDEX idx_fielding_plays_game ON fielding_plays(game_id);
+CREATE INDEX idx_fielding_plays_location ON fielding_plays USING GIST(hit_location);
+CREATE INDEX idx_fielding_plays_zone ON fielding_plays(fielding_zone);
+CREATE INDEX idx_park_factors_stadium_season ON park_factors(stadium_id, season);
 
 -- Create materialized views for common queries
 CREATE MATERIALIZED VIEW IF NOT EXISTS player_season_stats AS
