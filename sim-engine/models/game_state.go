@@ -6,20 +6,20 @@ import (
 
 // GameState represents the current state of a baseball game
 type GameState struct {
-	GameID      string    `json:"game_id"`
-	RunID       string    `json:"run_id"`
-	Inning      int       `json:"inning"`
-	InningHalf  string    `json:"inning_half"` // "top" or "bottom"
-	Outs        int       `json:"outs"`
-	HomeScore   int       `json:"home_score"`
-	AwayScore   int       `json:"away_score"`
-	Bases       BaseState `json:"bases"`
-	Count       Count     `json:"count"`
-	CurrentAB   AtBat     `json:"current_at_bat"`
-	Weather     Weather   `json:"weather"`
-	CreatedAt   time.Time `json:"created_at"`
-	IsComplete  bool      `json:"is_complete"`
-	WinnerTeam  string    `json:"winner_team,omitempty"`
+	GameID     string    `json:"game_id"`
+	RunID      string    `json:"run_id"`
+	Inning     int       `json:"inning"`
+	InningHalf string    `json:"inning_half"` // "top" or "bottom"
+	Outs       int       `json:"outs"`
+	HomeScore  int       `json:"home_score"`
+	AwayScore  int       `json:"away_score"`
+	Bases      BaseState `json:"bases"`
+	Count      Count     `json:"count"`
+	CurrentAB  AtBat     `json:"current_at_bat"`
+	Weather    Weather   `json:"weather"`
+	CreatedAt  time.Time `json:"created_at"`
+	IsComplete bool      `json:"is_complete"`
+	WinnerTeam string    `json:"winner_team,omitempty"`
 }
 
 // BaseState represents which bases are occupied
@@ -48,7 +48,7 @@ type AtBat struct {
 	BatterName  string  `json:"batter_name"`
 	PitcherID   string  `json:"pitcher_id"`
 	PitcherName string  `json:"pitcher_name"`
-	BatterHand  string  `json:"batter_hand"` // "L" or "R"
+	BatterHand  string  `json:"batter_hand"`  // "L" or "R"
 	PitcherHand string  `json:"pitcher_hand"` // "L" or "R"
 	PitchCount  int     `json:"pitch_count"`
 	Leverage    float64 `json:"leverage"` // Leverage index
@@ -82,16 +82,16 @@ type GameEvent struct {
 
 // SimulationResult represents the final result of one simulation
 type SimulationResult struct {
-	RunID            string       `json:"run_id"`
-	SimulationNumber int          `json:"simulation_number"`
-	HomeScore        int          `json:"home_score"`
-	AwayScore        int          `json:"away_score"`
-	Winner           string       `json:"winner"`
-	TotalPitches     int          `json:"total_pitches"`
-	GameDuration     int          `json:"game_duration_minutes"`
-	KeyEvents        []GameEvent  `json:"key_events"`
-	FinalState       GameState    `json:"final_state"`
-	CreatedAt        time.Time    `json:"created_at"`
+	RunID            string      `json:"run_id"`
+	SimulationNumber int         `json:"simulation_number"`
+	HomeScore        int         `json:"home_score"`
+	AwayScore        int         `json:"away_score"`
+	Winner           string      `json:"winner"`
+	TotalPitches     int         `json:"total_pitches"`
+	GameDuration     int         `json:"game_duration_minutes"`
+	KeyEvents        []GameEvent `json:"key_events"`
+	FinalState       GameState   `json:"final_state"`
+	CreatedAt        time.Time   `json:"created_at"`
 }
 
 // AggregatedResult represents the combined results of all simulations
@@ -148,12 +148,12 @@ func (gs *GameState) IsGameOver() bool {
 			return true
 		}
 	}
-	
+
 	// Extra innings - game ends when inning is complete and not tied
 	if gs.Inning > 9 && gs.InningHalf == "bottom" && gs.HomeScore != gs.AwayScore {
 		return true
 	}
-	
+
 	return false
 }
 
@@ -162,7 +162,7 @@ func (gs *GameState) AdvanceInning() {
 	gs.Outs = 0
 	gs.Count = Count{Balls: 0, Strikes: 0}
 	gs.Bases = BaseState{} // Clear bases
-	
+
 	if gs.InningHalf == "top" {
 		gs.InningHalf = "bottom"
 	} else {
@@ -226,34 +226,34 @@ func (bs *BaseState) ClearBases() {
 func (gs *GameState) CalculateLeverage() float64 {
 	// Simplified leverage calculation
 	// Real leverage index is more complex, considering inning, score differential, runners, outs
-	
+
 	baseLeverage := 1.0
-	
+
 	// Inning multiplier
 	if gs.Inning >= 7 {
 		baseLeverage += float64(gs.Inning-6) * 0.3
 	}
-	
+
 	// Score differential impact
 	scoreDiff := abs(gs.HomeScore - gs.AwayScore)
 	if scoreDiff <= 3 {
 		baseLeverage += (4 - float64(scoreDiff)) * 0.2
 	}
-	
+
 	// Runners on base
 	runners := gs.Bases.GetBaseCount()
 	baseLeverage += float64(runners) * 0.1
-	
+
 	// Out situation
 	if gs.Outs == 2 {
 		baseLeverage += 0.3
 	}
-	
+
 	// Late inning bonus
 	if gs.Inning >= 9 {
 		baseLeverage += 0.5
 	}
-	
+
 	return baseLeverage
 }
 

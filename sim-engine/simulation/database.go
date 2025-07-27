@@ -5,23 +5,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"math"
 	"time"
 
-	"../models"
+	"sim-engine/models"
 )
 
 // updateRunStatus updates the simulation run status in the database
 func (se *SimulationEngine) updateRunStatus(runID, status string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	
+
 	query := `
 		UPDATE simulation_runs 
 		SET status = $2, updated_at = NOW()
 		WHERE id = $1
 	`
-	
+
 	if _, err := se.db.Exec(ctx, query, runID, status); err != nil {
 		log.Printf("Failed to update run status for %s: %v", runID, err)
 	}
@@ -31,22 +30,22 @@ func (se *SimulationEngine) updateRunStatus(runID, status string) {
 func (se *SimulationEngine) updateProgress(runID string) {
 	se.mu.Lock()
 	defer se.mu.Unlock()
-	
+
 	if status, exists := se.activeRuns[runID]; exists {
 		status.CompletedRuns++
-		
+
 		// Update database every 100 completed runs or when done
 		if status.CompletedRuns%100 == 0 || status.CompletedRuns == status.TotalRuns {
 			go func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
-				
+
 				query := `
 					UPDATE simulation_runs 
 					SET completed_runs = $2, updated_at = NOW()
 					WHERE id = $1
 				`
-				
+
 				if _, err := se.db.Exec(ctx, query, runID, status.CompletedRuns); err != nil {
 					log.Printf("Failed to update progress for %s: %v", runID, err)
 				}
@@ -61,12 +60,12 @@ func (se *SimulationEngine) storeSimulationResult(ctx context.Context, result mo
 	if err != nil {
 		return fmt.Errorf("failed to marshal key events: %w", err)
 	}
-	
+
 	finalStateJSON, err := json.Marshal(result.FinalState)
 	if err != nil {
 		return fmt.Errorf("failed to marshal final state: %w", err)
 	}
-	
+
 	query := `
 		INSERT INTO simulation_results (
 			id, run_id, simulation_number, home_score, away_score, 
@@ -76,7 +75,7 @@ func (se *SimulationEngine) storeSimulationResult(ctx context.Context, result mo
 			uuid_generate_v4(), $1, $2, $3, $4, $5, $6, $7, $8, $9
 		)
 	`
-	
+
 	_, err = se.db.Exec(ctx, query,
 		result.RunID,
 		result.SimulationNumber,
@@ -88,11 +87,11 @@ func (se *SimulationEngine) storeSimulationResult(ctx context.Context, result mo
 		finalStateJSON,
 		result.CreatedAt,
 	)
-	
+
 	if err != nil {
 		return fmt.Errorf("failed to store simulation result: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -102,22 +101,22 @@ func (se *SimulationEngine) storeAggregatedResults(ctx context.Context, result *
 	if err != nil {
 		return fmt.Errorf("failed to marshal home score distribution: %w", err)
 	}
-	
+
 	awayScoreDistJSON, err := json.Marshal(result.AwayScoreDistribution)
 	if err != nil {
 		return fmt.Errorf("failed to marshal away score distribution: %w", err)
 	}
-	
+
 	highLeverageEventsJSON, err := json.Marshal(result.HighLeverageEvents)
 	if err != nil {
 		return fmt.Errorf("failed to marshal high leverage events: %w", err)
 	}
-	
+
 	statisticsJSON, err := json.Marshal(result.Statistics)
 	if err != nil {
 		return fmt.Errorf("failed to marshal statistics: %w", err)
 	}
-	
+
 	query := `
 		INSERT INTO simulation_aggregates (
 			id, run_id, home_win_probability, away_win_probability,
@@ -136,16 +135,16 @@ func (se *SimulationEngine) storeAggregatedResults(ctx context.Context, result *
 			away_score_distribution = EXCLUDED.away_score_distribution,
 			total_score_over_under = EXCLUDED.total_score_over_under
 	`
-	
+
 	// Calculate total score over/under probabilities
 	totalScoreOverUnder := make(map[string]interface{})
 	totalScoreOverUnder["average"] = result.ExpectedHomeScore + result.ExpectedAwayScore
 	totalScoreOverUnder["over_8_5"] = se.calculateOverUnderProbability(result, 8.5)
 	totalScoreOverUnder["over_9_5"] = se.calculateOverUnderProbability(result, 9.5)
 	totalScoreOverUnder["over_10_5"] = se.calculateOverUnderProbability(result, 10.5)
-	
+
 	totalScoreOverUnderJSON, _ := json.Marshal(totalScoreOverUnder)
-	
+
 	_, err = se.db.Exec(ctx, query,
 		result.RunID,
 		result.HomeWinProbability,
@@ -156,19 +155,19 @@ func (se *SimulationEngine) storeAggregatedResults(ctx context.Context, result *
 		awayScoreDistJSON,
 		totalScoreOverUnderJSON,
 	)
-	
+
 	if err != nil {
 		return fmt.Errorf("failed to store aggregated results: %w", err)
 	}
-	
+
 	// Also store additional metadata in a separate table if needed
 	return se.storeSimulationMetadata(ctx, result, highLeverageEventsJSON, statisticsJSON)
 }
 
 // storeSimulationMetadata stores additional simulation metadata
-func (se *SimulationEngine) storeSimulationMetadata(ctx context.Context, result *models.AggregatedResult, 
+func (se *SimulationEngine) storeSimulationMetadata(ctx context.Context, result *models.AggregatedResult,
 	highLeverageEventsJSON, statisticsJSON []byte) error {
-	
+
 	// Create or update metadata table
 	createTableQuery := `
 		CREATE TABLE IF NOT EXISTS simulation_metadata (
@@ -185,11 +184,11 @@ func (se *SimulationEngine) storeSimulationMetadata(ctx context.Context, result 
 			updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 		)
 	`
-	
+
 	if _, err := se.db.Exec(ctx, createTableQuery); err != nil {
 		log.Printf("Warning: failed to create metadata table: %v", err)
 	}
-	
+
 	metadataQuery := `
 		INSERT INTO simulation_metadata (
 			run_id, total_simulations, home_wins, away_wins, ties,
@@ -207,7 +206,7 @@ func (se *SimulationEngine) storeSimulationMetadata(ctx context.Context, result 
 			statistics = EXCLUDED.statistics,
 			updated_at = NOW()
 	`
-	
+
 	_, err := se.db.Exec(ctx, metadataQuery,
 		result.RunID,
 		result.TotalSimulations,
@@ -219,7 +218,7 @@ func (se *SimulationEngine) storeSimulationMetadata(ctx context.Context, result 
 		highLeverageEventsJSON,
 		statisticsJSON,
 	)
-	
+
 	return err
 }
 
@@ -228,7 +227,7 @@ func (se *SimulationEngine) calculateAggregatedResults(runID string, results []m
 	if len(results) == 0 {
 		return &models.AggregatedResult{RunID: runID}
 	}
-	
+
 	aggregated := &models.AggregatedResult{
 		RunID:                 runID,
 		TotalSimulations:      len(results),
@@ -236,11 +235,11 @@ func (se *SimulationEngine) calculateAggregatedResults(runID string, results []m
 		AwayScoreDistribution: make(map[int]int),
 		Statistics:            make(map[string]float64),
 	}
-	
+
 	var totalHomeScore, totalAwayScore float64
 	var totalDuration, totalPitches float64
 	var allHighLeverageEvents []models.GameEvent
-	
+
 	// Process each result
 	for _, result := range results {
 		// Count wins
@@ -252,17 +251,17 @@ func (se *SimulationEngine) calculateAggregatedResults(runID string, results []m
 		case "tie":
 			aggregated.Ties++
 		}
-		
+
 		// Score distributions
 		aggregated.HomeScoreDistribution[result.HomeScore]++
 		aggregated.AwayScoreDistribution[result.AwayScore]++
-		
+
 		// Running totals
 		totalHomeScore += float64(result.HomeScore)
 		totalAwayScore += float64(result.AwayScore)
 		totalDuration += float64(result.GameDuration)
 		totalPitches += float64(result.TotalPitches)
-		
+
 		// Collect high leverage events
 		for _, event := range result.KeyEvents {
 			if event.Leverage > 2.0 { // Very high leverage
@@ -270,19 +269,19 @@ func (se *SimulationEngine) calculateAggregatedResults(runID string, results []m
 			}
 		}
 	}
-	
+
 	// Calculate probabilities
 	totalSims := float64(aggregated.TotalSimulations)
 	aggregated.HomeWinProbability = float64(aggregated.HomeWins) / totalSims
 	aggregated.AwayWinProbability = float64(aggregated.AwayWins) / totalSims
 	aggregated.TieProbability = float64(aggregated.Ties) / totalSims
-	
+
 	// Calculate averages
 	aggregated.ExpectedHomeScore = totalHomeScore / totalSims
 	aggregated.ExpectedAwayScore = totalAwayScore / totalSims
 	aggregated.AverageGameDuration = totalDuration / totalSims
 	aggregated.AveragePitches = totalPitches / totalSims
-	
+
 	// Additional statistics
 	aggregated.Statistics["total_runs_average"] = aggregated.ExpectedHomeScore + aggregated.ExpectedAwayScore
 	aggregated.Statistics["score_variance"] = se.calculateScoreVariance(results, aggregated.ExpectedHomeScore, aggregated.ExpectedAwayScore)
@@ -290,14 +289,14 @@ func (se *SimulationEngine) calculateAggregatedResults(runID string, results []m
 	aggregated.Statistics["one_run_game_percentage"] = se.calculateOneRunGamePercentage(results)
 	aggregated.Statistics["shutout_percentage"] = se.calculateShutoutPercentage(results)
 	aggregated.Statistics["high_scoring_percentage"] = se.calculateHighScoringPercentage(results)
-	
+
 	// Limit high leverage events to most significant
 	if len(allHighLeverageEvents) > 50 {
 		// Sort by leverage and take top 50
 		allHighLeverageEvents = se.selectTopLeverageEvents(allHighLeverageEvents, 50)
 	}
 	aggregated.HighLeverageEvents = allHighLeverageEvents
-	
+
 	return aggregated
 }
 
@@ -305,7 +304,7 @@ func (se *SimulationEngine) calculateAggregatedResults(runID string, results []m
 func (se *SimulationEngine) calculateOverUnderProbability(result *models.AggregatedResult, threshold float64) float64 {
 	overCount := 0
 	totalCount := 0
-	
+
 	for homeScore, homeCount := range result.HomeScoreDistribution {
 		for awayScore, awayCount := range result.AwayScoreDistribution {
 			totalScore := float64(homeScore + awayScore)
@@ -315,11 +314,11 @@ func (se *SimulationEngine) calculateOverUnderProbability(result *models.Aggrega
 			totalCount += homeCount * awayCount
 		}
 	}
-	
+
 	if totalCount == 0 {
 		return 0.0
 	}
-	
+
 	return float64(overCount) / float64(totalCount)
 }
 
@@ -327,13 +326,13 @@ func (se *SimulationEngine) calculateOverUnderProbability(result *models.Aggrega
 func (se *SimulationEngine) calculateScoreVariance(results []models.SimulationResult, expectedHome, expectedAway float64) float64 {
 	expectedTotal := expectedHome + expectedAway
 	var sumSquaredDiffs float64
-	
+
 	for _, result := range results {
 		totalScore := float64(result.HomeScore + result.AwayScore)
 		diff := totalScore - expectedTotal
 		sumSquaredDiffs += diff * diff
 	}
-	
+
 	return sumSquaredDiffs / float64(len(results))
 }
 
@@ -395,7 +394,7 @@ func (se *SimulationEngine) selectTopLeverageEvents(events []models.GameEvent, l
 	if len(events) <= limit {
 		return events
 	}
-	
+
 	// Sort by leverage (descending)
 	for i := 0; i < len(events)-1; i++ {
 		for j := i + 1; j < len(events); j++ {
@@ -404,7 +403,7 @@ func (se *SimulationEngine) selectTopLeverageEvents(events []models.GameEvent, l
 			}
 		}
 	}
-	
+
 	return events[:limit]
 }
 
@@ -412,7 +411,7 @@ func (se *SimulationEngine) selectTopLeverageEvents(events []models.GameEvent, l
 func (se *SimulationEngine) GetRunStatus(runID string) (*RunStatus, bool) {
 	se.mu.RLock()
 	defer se.mu.RUnlock()
-	
+
 	status, exists := se.activeRuns[runID]
 	return status, exists
 }
@@ -426,11 +425,11 @@ func (se *SimulationEngine) GetRunResult(ctx context.Context, runID string) (*mo
 		return status.AggregatedResult, nil
 	}
 	se.mu.RUnlock()
-	
+
 	// Load from database
 	var result models.AggregatedResult
 	var homeScoreDist, awayScoreDist, totalScoreOverUnder []byte
-	
+
 	query := `
 		SELECT sa.run_id, sa.home_win_probability, sa.away_win_probability,
 		       sa.expected_home_score, sa.expected_away_score,
@@ -448,9 +447,9 @@ func (se *SimulationEngine) GetRunResult(ctx context.Context, runID string) (*mo
 		LEFT JOIN simulation_metadata sm ON sa.run_id = sm.run_id
 		WHERE sa.run_id = $1
 	`
-	
+
 	var highLeverageEventsJSON, statisticsJSON []byte
-	
+
 	err := se.db.QueryRow(ctx, query, runID).Scan(
 		&result.RunID,
 		&result.HomeWinProbability,
@@ -469,35 +468,35 @@ func (se *SimulationEngine) GetRunResult(ctx context.Context, runID string) (*mo
 		&highLeverageEventsJSON,
 		&statisticsJSON,
 	)
-	
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to load simulation result: %w", err)
 	}
-	
+
 	// Parse JSON fields
 	if err := json.Unmarshal(homeScoreDist, &result.HomeScoreDistribution); err != nil {
 		log.Printf("Failed to parse home score distribution: %v", err)
 		result.HomeScoreDistribution = make(map[int]int)
 	}
-	
+
 	if err := json.Unmarshal(awayScoreDist, &result.AwayScoreDistribution); err != nil {
 		log.Printf("Failed to parse away score distribution: %v", err)
 		result.AwayScoreDistribution = make(map[int]int)
 	}
-	
+
 	if err := json.Unmarshal(highLeverageEventsJSON, &result.HighLeverageEvents); err != nil {
 		log.Printf("Failed to parse high leverage events: %v", err)
 		result.HighLeverageEvents = []models.GameEvent{}
 	}
-	
+
 	if err := json.Unmarshal(statisticsJSON, &result.Statistics); err != nil {
 		log.Printf("Failed to parse statistics: %v", err)
 		result.Statistics = make(map[string]float64)
 	}
-	
+
 	// Calculate tie probability
 	result.TieProbability = 1.0 - result.HomeWinProbability - result.AwayWinProbability
-	
+
 	return &result, nil
 }
 
@@ -505,9 +504,9 @@ func (se *SimulationEngine) GetRunResult(ctx context.Context, runID string) (*mo
 func (se *SimulationEngine) CleanupOldRuns() {
 	se.mu.Lock()
 	defer se.mu.Unlock()
-	
+
 	cutoff := time.Now().Add(-24 * time.Hour) // Keep for 24 hours
-	
+
 	for runID, status := range se.activeRuns {
 		if status.StartTime.Before(cutoff) {
 			delete(se.activeRuns, runID)

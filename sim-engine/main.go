@@ -15,17 +15,16 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/jackc/pgx/v5/pgxpool"
-	
-	"./models"
-	"./simulation"
+
+	"sim-engine/simulation"
 )
 
 type Server struct {
-	db           *pgxpool.Pool
-	router       *mux.Router
-	httpServer   *http.Server
-	config       *Config
-	simEngine    *simulation.SimulationEngine
+	db         *pgxpool.Pool
+	router     *mux.Router
+	httpServer *http.Server
+	config     *Config
+	simEngine  *simulation.SimulationEngine
 }
 
 type Config struct {
@@ -48,32 +47,32 @@ type SimulationRequest struct {
 }
 
 type SimulationResponse struct {
-	RunID              string    `json:"run_id"`
-	Status             string    `json:"status"`
-	Message            string    `json:"message"`
-	CreatedAt          time.Time `json:"created_at"`
+	RunID     string    `json:"run_id"`
+	Status    string    `json:"status"`
+	Message   string    `json:"message"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type SimulationStatus struct {
-	RunID         string    `json:"run_id"`
-	GameID        string    `json:"game_id"`
-	Status        string    `json:"status"`
-	TotalRuns     int       `json:"total_runs"`
-	CompletedRuns int       `json:"completed_runs"`
-	Progress      float64   `json:"progress"`
-	CreatedAt     time.Time `json:"created_at"`
+	RunID         string     `json:"run_id"`
+	GameID        string     `json:"game_id"`
+	Status        string     `json:"status"`
+	TotalRuns     int        `json:"total_runs"`
+	CompletedRuns int        `json:"completed_runs"`
+	Progress      float64    `json:"progress"`
+	CreatedAt     time.Time  `json:"created_at"`
 	CompletedAt   *time.Time `json:"completed_at,omitempty"`
 }
 
 type SimulationResult struct {
-	RunID                string                 `json:"run_id"`
-	HomeWinProbability   float64                `json:"home_win_probability"`
-	AwayWinProbability   float64                `json:"away_win_probability"`
-	ExpectedHomeScore    float64                `json:"expected_home_score"`
-	ExpectedAwayScore    float64                `json:"expected_away_score"`
-	HomeScoreDistribution map[int]int           `json:"home_score_distribution"`
-	AwayScoreDistribution map[int]int           `json:"away_score_distribution"`
-	Metadata             map[string]interface{} `json:"metadata"`
+	RunID                 string                 `json:"run_id"`
+	HomeWinProbability    float64                `json:"home_win_probability"`
+	AwayWinProbability    float64                `json:"away_win_probability"`
+	ExpectedHomeScore     float64                `json:"expected_home_score"`
+	ExpectedAwayScore     float64                `json:"expected_away_score"`
+	HomeScoreDistribution map[int]int            `json:"home_score_distribution"`
+	AwayScoreDistribution map[int]int            `json:"away_score_distribution"`
+	Metadata              map[string]interface{} `json:"metadata"`
 }
 
 func NewConfig() *Config {
@@ -103,7 +102,7 @@ func NewServer(config *Config) (*Server, error) {
 	// Database connection
 	dbURL := fmt.Sprintf("postgresql://%s:%s@%s:%s/%s",
 		config.DBUser, config.DBPassword, config.DBHost, config.DBPort, config.DBName)
-	
+
 	dbConfig, err := pgxpool.ParseConfig(dbURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse db config: %w", err)
@@ -126,6 +125,7 @@ func NewServer(config *Config) (*Server, error) {
 	}
 
 	simEngine := simulation.NewSimulationEngine(db, config.Workers, config.SimulationRuns)
+	simEngine.StartPerformanceMonitoring()
 
 	s := &Server{
 		db:        db,
@@ -141,12 +141,12 @@ func NewServer(config *Config) (*Server, error) {
 func (s *Server) setupRoutes() {
 	// Health check
 	s.router.HandleFunc("/health", s.healthHandler).Methods("GET")
-	
+
 	// Simulation endpoints
 	s.router.HandleFunc("/simulate", s.simulateHandler).Methods("POST")
 	s.router.HandleFunc("/simulation/{id}/status", s.simulationStatusHandler).Methods("GET")
 	s.router.HandleFunc("/simulation/{id}/result", s.simulationResultHandler).Methods("GET")
-	
+
 	// Apply middleware
 	s.router.Use(s.loggingMiddleware)
 	s.router.Use(s.recoveryMiddleware)
@@ -161,17 +161,17 @@ func (s *Server) Start() error {
 		IdleTimeout:  120 * time.Second,
 	}
 
-	log.Printf("Starting Simulation Engine on port %s with %d workers", 
+	log.Printf("Starting Simulation Engine on port %s with %d workers",
 		s.config.Port, s.config.Workers)
 	return s.httpServer.ListenAndServe()
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
 	log.Println("Shutting down Simulation Engine...")
-	
+
 	// Close database connection
 	s.db.Close()
-	
+
 	// Shutdown HTTP server
 	return s.httpServer.Shutdown(ctx)
 }
@@ -184,17 +184,17 @@ func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
 		"workers":  s.config.Workers,
 		"database": "connected",
 	}
-	
+
 	// Check database connection
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
-	
+
 	if err := s.db.Ping(ctx); err != nil {
 		health["database"] = "disconnected"
 		health["status"] = "unhealthy"
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
-	
+
 	writeJSON(w, health)
 }
 
@@ -207,16 +207,16 @@ func (s *Server) simulateHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Validate game exists
 	var gameExists bool
-	err := s.db.QueryRow(r.Context(), 
-		"SELECT EXISTS(SELECT 1 FROM games WHERE game_id = $1)", 
+	err := s.db.QueryRow(r.Context(),
+		"SELECT EXISTS(SELECT 1 FROM games WHERE game_id = $1)",
 		req.GameID).Scan(&gameExists)
-	
+
 	if err != nil {
 		log.Printf("Database error: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
-	
+
 	if !gameExists {
 		http.Error(w, "Game not found", http.StatusNotFound)
 		return
@@ -230,12 +230,12 @@ func (s *Server) simulateHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	configJSON, _ := json.Marshal(req.Config)
-	
+
 	_, err = s.db.Exec(r.Context(), `
 		INSERT INTO simulation_runs (id, game_id, config, total_runs, status)
 		VALUES ($1, (SELECT id FROM games WHERE game_id = $2), $3, $4, 'pending')
 	`, runID, req.GameID, configJSON, simulationRuns)
-	
+
 	if err != nil {
 		log.Printf("Failed to create simulation run: %v", err)
 		http.Error(w, "Failed to create simulation", http.StatusInternalServerError)
@@ -279,7 +279,7 @@ func (s *Server) simulationStatusHandler(w http.ResponseWriter, r *http.Request)
 	var status SimulationStatus
 	var gameID string
 	var config json.RawMessage
-	
+
 	err := s.db.QueryRow(r.Context(), `
 		SELECT sr.id, g.game_id, sr.status, sr.total_runs, sr.completed_runs, 
 		       sr.created_at, sr.completed_at, sr.config
@@ -288,7 +288,7 @@ func (s *Server) simulationStatusHandler(w http.ResponseWriter, r *http.Request)
 		WHERE sr.id = $1
 	`, runID).Scan(&status.RunID, &gameID, &status.Status, &status.TotalRuns,
 		&status.CompletedRuns, &status.CreatedAt, &status.CompletedAt, &config)
-	
+
 	if err != nil {
 		http.Error(w, "Simulation not found", http.StatusNotFound)
 		return
@@ -306,9 +306,9 @@ func (s *Server) simulationResultHandler(w http.ResponseWriter, r *http.Request)
 
 	// Check if simulation is complete
 	var status string
-	err := s.db.QueryRow(r.Context(), 
+	err := s.db.QueryRow(r.Context(),
 		"SELECT status FROM simulation_runs WHERE id = $1", runID).Scan(&status)
-	
+
 	if err != nil {
 		http.Error(w, "Simulation not found", http.StatusNotFound)
 		return
@@ -330,17 +330,17 @@ func (s *Server) simulationResultHandler(w http.ResponseWriter, r *http.Request)
 	// Convert to response format
 	result := SimulationResult{
 		RunID:                 aggregatedResult.RunID,
-		HomeWinProbability:   aggregatedResult.HomeWinProbability,
-		AwayWinProbability:   aggregatedResult.AwayWinProbability,
-		ExpectedHomeScore:    aggregatedResult.ExpectedHomeScore,
-		ExpectedAwayScore:    aggregatedResult.ExpectedAwayScore,
+		HomeWinProbability:    aggregatedResult.HomeWinProbability,
+		AwayWinProbability:    aggregatedResult.AwayWinProbability,
+		ExpectedHomeScore:     aggregatedResult.ExpectedHomeScore,
+		ExpectedAwayScore:     aggregatedResult.ExpectedAwayScore,
 		HomeScoreDistribution: aggregatedResult.HomeScoreDistribution,
 		AwayScoreDistribution: aggregatedResult.AwayScoreDistribution,
 		Metadata: map[string]interface{}{
-			"total_simulations":      aggregatedResult.TotalSimulations,
-			"average_game_duration":  aggregatedResult.AverageGameDuration,
-			"average_pitches":        aggregatedResult.AveragePitches,
-			"high_leverage_events":   len(aggregatedResult.HighLeverageEvents),
+			"total_simulations":     aggregatedResult.TotalSimulations,
+			"average_game_duration": aggregatedResult.AverageGameDuration,
+			"average_pitches":       aggregatedResult.AveragePitches,
+			"high_leverage_events":  len(aggregatedResult.HighLeverageEvents),
 			"statistics":            aggregatedResult.Statistics,
 		},
 	}
@@ -352,12 +352,12 @@ func (s *Server) simulationResultHandler(w http.ResponseWriter, r *http.Request)
 func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		
+
 		// Create a custom response writer to capture status code
 		lrw := &loggingResponseWriter{ResponseWriter: w, statusCode: http.StatusOK}
-		
+
 		next.ServeHTTP(lrw, r)
-		
+
 		duration := time.Since(start)
 		log.Printf("%s %s %d %v", r.Method, r.RequestURI, lrw.statusCode, duration)
 	})
@@ -403,7 +403,7 @@ func getEnv(key, defaultValue string) string {
 
 func main() {
 	config := NewConfig()
-	
+
 	server, err := NewServer(config)
 	if err != nil {
 		log.Fatal("Failed to create server:", err)
