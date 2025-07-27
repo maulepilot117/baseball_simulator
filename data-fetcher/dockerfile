@@ -1,5 +1,5 @@
-# Use Python 3.11 slim image
-FROM python:3.11-slim
+# Multi-stage build for Python data fetcher
+FROM python:3.13-slim AS base
 
 # Set working directory
 WORKDIR /app
@@ -10,13 +10,46 @@ RUN apt-get update && apt-get install -y \
     g++ \
     libpq-dev \
     curl \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Development stage
+FROM base AS development
+
+# Copy requirements first for better caching
+COPY requirements.txt .
+
+# Install Python dependencies with dev extras
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install development tools
+RUN pip install --no-cache-dir pytest black flake8 mypy
+
+# Create non-root user
+RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+USER appuser
+
+# The source code will be mounted as a volume
+
+# Expose port
+EXPOSE 8082
+
+# Health check for development
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8082/health || exit 1
+
+# Run the application
+CMD ["python", "main.py"]
+
+# Production stage
+FROM base AS production
 
 # Copy requirements first for better caching
 COPY requirements.txt .
 
 # Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir gunicorn uvicorn[standard]
 
 # Copy application code
 COPY . .
@@ -32,5 +65,5 @@ EXPOSE 8082
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8082/health || exit 1
 
-# Run the application
-CMD ["python", "main.py"]
+# Run the application with gunicorn for production
+CMD ["gunicorn", "--bind", "0.0.0.0:8082", "--workers", "4", "--worker-class", "uvicorn.workers.UvicornWorker", "main:app"]
