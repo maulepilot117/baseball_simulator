@@ -2,21 +2,36 @@
   "name": "baseball-simulation-frontend",
   "version": "1.0.0",
   "description": "Baseball simulation frontend built with Deno and React",
+  "exports": "./src/main.tsx",
   "tasks": {
-    "dev": "deno run --allow-net --allow-read --allow-write --allow-env src/main.tsx",
-    "build": "echo 'Build placeholder - implement React build process' && mkdir -p dist && echo '<h1>Baseball Simulation Frontend</h1><p>Coming soon...</p>' > dist/index.html",
+    "dev": "deno run --allow-net --allow-read --allow-write --allow-env --watch dev.ts",
+    "build": "deno run --allow-net --allow-read --allow-write --allow-env scripts/build.ts",
     "start": "deno task dev",
+    "preview": "deno run --allow-net --allow-read static-server.ts",
     "test": "deno test --allow-all"
   },
   "imports": {
     "react": "https://esm.sh/react@18.2.0",
     "react-dom": "https://esm.sh/react-dom@18.2.0",
-    "react-router-dom": "https://esm.sh/react-router-dom@6.8.1"
+    "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+    "react-router-dom": "https://esm.sh/react-router-dom@6.8.1",
+    "recharts": "https://esm.sh/recharts@2.12.7",
+    "lucide-react": "https://esm.sh/lucide-react@0.263.1",
+    "@types/react": "https://esm.sh/@types/react@18.2.79",
+    "@types/react-dom": "https://esm.sh/@types/react-dom@18.2.25"
   },
   "compilerOptions": {
+    "lib": ["dom", "dom.iterable", "es6"],
     "allowJs": true,
-    "lib": ["deno.window"],
+    "allowSyntheticDefaultImports": true,
+    "skipLibCheck": true,
+    "esModuleInterop": false,
     "strict": true,
+    "forceConsistentCasingInFileNames": true,
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
     "jsx": "react-jsx"
   }
 }
