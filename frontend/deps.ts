@@ -1,6 +1,6 @@
-// React core
-export { default as React } from "https://esm.sh/react@18.2.0";
-export { createRoot } from "https://esm.sh/react-dom@18.2.0/client";
+// React core with import map compatibility
+export { default as React, createElement, useState, useEffect, useReducer, useCallback, useRef, useContext, createContext } from "react";
+export { createRoot } from "react-dom/client";
 
 // React Router
 export { 
@@ -12,7 +12,7 @@ export {
   useNavigate, 
   useParams, 
   useLocation 
-} from "https://esm.sh/react-router-dom@6.8.1";
+} from "react-router-dom";
 
 // Charts and visualization
 export { 
@@ -29,7 +29,7 @@ export {
   Tooltip, 
   Legend, 
   ResponsiveContainer 
-} from "https://esm.sh/recharts@2.12.7";
+} from "recharts";
 
 // Icons
 export { 
@@ -53,4 +53,4 @@ export {
   Filter,
   Menu,
   X
-} from "https://esm.sh/lucide-react@0.263.1";
+} from "lucide-react";

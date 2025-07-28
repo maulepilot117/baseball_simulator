@@ -7,7 +7,17 @@ import SimulationPage from "./pages/SimulationPage.tsx";
 import TeamsPage from "./pages/TeamsPage.tsx";
 import PlayersPage from "./pages/PlayersPage.tsx";
 import StatsPage from "./pages/StatsPage.tsx";
-import "./styles/globals.css";
+
+// Load CSS dynamically to avoid module import issues
+const loadCSS = () => {
+  const link = document.createElement('link');
+  link.rel = 'stylesheet';
+  link.href = '/src/styles/globals.css';
+  document.head.appendChild(link);
+};
+
+// Load CSS when the module loads
+loadCSS();
 
 function App() {
   return React.createElement(

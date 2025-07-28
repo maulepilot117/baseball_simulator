@@ -6,6 +6,7 @@
   "tasks": {
     "dev": "deno run --allow-net --allow-read --allow-write --allow-env --watch dev.ts",
     "start": "deno task dev",
+    "build": "deno run --allow-read --allow-write build.ts",
     "test": "deno test --allow-all"
   },
   "imports": {
@@ -19,17 +20,16 @@
     "@types/react-dom": "https://esm.sh/@types/react-dom@18.2.25"
   },
   "compilerOptions": {
-    "lib": ["dom", "dom.iterable", "es6"],
-    "allowJs": true,
-    "allowSyntheticDefaultImports": true,
-    "skipLibCheck": true,
-    "esModuleInterop": false,
-    "strict": true,
-    "forceConsistentCasingInFileNames": true,
+    "lib": ["dom", "dom.iterable", "es2022"],
+    "target": "ES2022",
+    "module": "ES2022",
     "moduleResolution": "bundler",
-    "resolveJsonModule": true,
-    "isolatedModules": true,
-    "noEmit": true,
-    "jsx": "react-jsx"
+    "strict": true,
+    "jsx": "react",
+    "jsxFactory": "React.createElement",
+    "allowJs": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true
   }
 }
