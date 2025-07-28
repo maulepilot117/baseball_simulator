@@ -1,4 +1,4 @@
-// React core with import map compatibility
+// React core with import map compatibility (Classic JSX runtime)
 export { default as React, createElement, useState, useEffect, useReducer, useCallback, useRef, useContext, createContext } from "react";
 export { createRoot } from "react-dom/client";
 

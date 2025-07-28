@@ -10,29 +10,54 @@ console.log(`🚀 Starting development server on http://localhost:${port}`);
 await serve(async (req) => {
   const pathname = new URL(req.url).pathname;
   
-  // Handle TypeScript files by serving pre-compiled JavaScript
+  // Handle TypeScript files - transpile on-the-fly for browser
   if (pathname.endsWith('.tsx') || pathname.endsWith('.ts')) {
     try {
       const filePath = pathname.startsWith('/') ? pathname.slice(1) : pathname;
-      const jsPath = filePath.replace(/\.tsx?$/, '.js').replace('src/', 'dist/');
       
+      // Check if file exists
       try {
-        // Try to serve pre-compiled JavaScript
-        const jsContent = await Deno.readTextFile(jsPath);
-        console.log(`Served compiled: ${pathname} -> ${jsPath}`);
-        
-        return new Response(jsContent, {
-          headers: { 
-            "content-type": "application/javascript; charset=utf-8",
-            "cache-control": "no-cache"
-          },
-        });
+        const fileInfo = await Deno.stat(filePath);
+        if (fileInfo.isFile) {
+          console.log(`Transpiling TypeScript on-the-fly: ${pathname}`);
+          
+          // Use dynamic import to let Deno handle the TypeScript compilation
+          const moduleUrl = new URL(filePath, `file://${Deno.cwd()}/`).href;
+          
+          try {
+            // This will cause Deno to compile the TypeScript and cache it
+            await import(moduleUrl);
+            
+            // Read the TypeScript source and perform basic transformation for browser
+            const tsContent = await Deno.readTextFile(filePath);
+            
+            // Simple transformation to make it browser-compatible
+            let jsContent = tsContent
+              // Transform JSX imports to use React 18 automatic runtime
+              .replace(/^import React from ['"]react['"];?\s*$/gm, '')
+              .replace(/^import \* as React from ['"]react['"];?\s*$/gm, '')
+              // Keep other imports as-is since we have importmap
+              ;
+            
+            return new Response(jsContent, {
+              headers: { 
+                "content-type": "application/javascript; charset=utf-8",
+                "cache-control": "no-cache"
+              },
+            });
+          } catch (importError) {
+            console.error(`Error importing ${filePath}:`, importError);
+            return new Response(`// Error compiling ${pathname}: ${importError.message}`, {
+              status: 500,
+              headers: { 
+                "content-type": "application/javascript; charset=utf-8",
+                "cache-control": "no-cache"
+              },
+            });
+          }
+        }
       } catch {
-        // If compiled file doesn't exist, suggest running build
-        const errorMsg = `// File not found: ${jsPath}\n// Run 'deno task build' to compile TypeScript files`;
-        console.warn(`⚠️ Compiled file missing: ${jsPath}`);
-        
-        return new Response(errorMsg, {
+        return new Response(`// TypeScript file not found: ${pathname}`, {
           status: 404,
           headers: { 
             "content-type": "application/javascript; charset=utf-8",
@@ -84,12 +109,12 @@ await serve(async (req) => {
     <script type="importmap">
     {
       "imports": {
-        "react": "https://esm.sh/react@18.2.0?bundle&no-dts",
-        "react-dom": "https://esm.sh/react-dom@18.2.0?bundle&no-dts&external=react",
-        "react-dom/client": "https://esm.sh/react-dom@18.2.0/client?bundle&no-dts&external=react",
-        "react-router-dom": "https://esm.sh/react-router-dom@6.8.1?bundle&no-dts&external=react,react-dom",
-        "recharts": "https://esm.sh/recharts@2.12.7?bundle&no-dts&external=react,react-dom",
-        "lucide-react": "https://esm.sh/lucide-react@0.263.1?bundle&no-dts&external=react"
+        "react": "https://esm.sh/react@18.2.0",
+        "react-dom": "https://esm.sh/react-dom@18.2.0",
+        "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+        "react-router-dom": "https://esm.sh/react-router-dom@6.8.1",
+        "recharts": "https://esm.sh/recharts@2.12.7",
+        "lucide-react": "https://esm.sh/lucide-react@0.263.1"
       }
     }
     </script>
