@@ -151,7 +151,7 @@ services:
           memory: 256M
           cpus: '0.25'
 
-  # Frontend Service (React/Deno)
+  # Frontend Service (Native TypeScript/Deno)
   frontend:
     build:
       context: ./frontend
@@ -159,13 +159,15 @@ services:
       target: development
     container_name: baseball-frontend
     environment:
-      - REACT_APP_API_BASE_URL=${API_BASE_URL:-http://localhost:8080/api/v1}
-      - REACT_APP_WEBSOCKET_URL=${WEBSOCKET_URL:-ws://localhost:8080/ws}
+      - PORT=3000
+      - NODE_ENV=development
+      - API_BASE_URL=${API_BASE_URL:-http://localhost:8080/api/v1}
+      - WEBSOCKET_URL=${WEBSOCKET_URL:-ws://localhost:8080/ws}
     ports:
       - "${FRONTEND_PORT:-3000}:3000"
     volumes:
       - ./frontend:/app:cached
-      - /app/node_modules
+      - deno_cache:/home/frontenduser/.cache/deno
     networks:
       - baseball-network
     depends_on:
@@ -274,6 +276,8 @@ volumes:
   prometheus_data:
     driver: local
   grafana_data:
+    driver: local
+  deno_cache:
     driver: local
 
 # Custom network for service communication
