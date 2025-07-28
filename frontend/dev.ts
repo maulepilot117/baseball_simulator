@@ -28,16 +28,18 @@ await serve(async (req) => {
             // This will cause Deno to compile the TypeScript and cache it
             await import(moduleUrl);
             
-            // Read the TypeScript source and perform basic transformation for browser
-            const tsContent = await Deno.readTextFile(filePath);
+            // Use Deno's built-in TypeScript compilation via dynamic import
+            // This leverages Deno's native TS support instead of manual parsing
+            const moduleUrl = new URL(filePath, `file://${Deno.cwd()}/`).href;
             
-            // Simple transformation to make it browser-compatible
-            let jsContent = tsContent
-              // Transform JSX imports to use React 18 automatic runtime
-              .replace(/^import React from ['"]react['"];?\s*$/gm, '')
-              .replace(/^import \* as React from ['"]react['"];?\s*$/gm, '')
-              // Keep other imports as-is since we have importmap
-              ;
+            try {
+              // Import the module to trigger Deno's TS compilation
+              const module = await import(moduleUrl);
+              
+              // For now, serve the original TypeScript content
+              // This is a temporary solution - we should implement proper bundling
+              const tsContent = await Deno.readTextFile(filePath);
+              const jsContent = tsContent;
             
             return new Response(jsContent, {
               headers: { 

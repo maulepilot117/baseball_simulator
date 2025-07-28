@@ -134,8 +134,7 @@ CREATE TABLE IF NOT EXISTS pitches (
     exit_velocity DECIMAL(4,1),
     launch_angle DECIMAL(4,1),
     hit_distance INTEGER,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    PRIMARY KEY (id, game_date)
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 ) PARTITION BY RANGE (game_date);
 
 -- Create monthly partitions for 2025
@@ -231,8 +230,7 @@ CREATE TABLE IF NOT EXISTS fielding_plays (
     assist_player_ids UUID[], -- array of player UUIDs for assists
     runner_advancement JSONB, -- base running data
     outs_on_play INTEGER DEFAULT 0,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    PRIMARY KEY (id, game_date)
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 ) PARTITION BY RANGE (game_date);
 
 -- Create monthly partitions for fielding plays (2025)

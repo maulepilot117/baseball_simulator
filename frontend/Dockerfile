@@ -1,72 +1,42 @@
-# Native TypeScript frontend with Deno
-FROM denoland/deno:latest AS base
+# Multi-stage build for React frontend with Vite
+FROM node:22-alpine as base
 
 # Set working directory
 WORKDIR /app
 
-# Install curl for health checks
-RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
-
-# Create non-root user
-RUN useradd -m -u 1000 frontenduser && \
-    mkdir -p /home/frontenduser/.cache/deno && \
-    chown -R frontenduser:frontenduser /app /home/frontenduser/.cache
-
-# Set Deno cache directory
-ENV DENO_DIR=/home/frontenduser/.cache/deno
-
-USER frontenduser
+# Install dependencies
+COPY package.json package-lock.json* ./
+RUN npm install --only=production && npm cache clean --force
 
 # Development stage
-FROM base AS development
-
-# Copy dependency files first for better caching
-COPY --chown=frontenduser:frontenduser deno.json deps.ts ./
-
-# Pre-cache dependencies
-RUN deno cache --reload deps.ts
-
-# Copy source code
-COPY --chown=frontenduser:frontenduser . .
-
-# Cache TypeScript files for faster startup
-RUN deno cache --reload src/main.tsx src/App.tsx
-
-# Expose port  
+FROM base as development
+RUN npm install && npm cache clean --force
+COPY . .
 EXPOSE 3000
+CMD ["npm", "run", "dev"]
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:3000/ || exit 1
+# Build stage  
+FROM base as builder
+RUN npm install && npm cache clean --force
+COPY . .
+RUN npm run build
 
-# Run the development server with hot reloading
-CMD ["deno", "run", "--allow-net", "--allow-read", "--allow-write", "--allow-env", "--watch", "dev.ts"]
+# Production stage with nginx
+FROM nginx:alpine as production
+COPY --from=builder /app/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/nginx.conf
 
-# Production stage
-FROM base AS production
+# Create non-root user for security
+RUN addgroup -g 1001 -S frontenduser && \
+    adduser -S frontenduser -u 1001 -G frontenduser && \
+    chown -R frontenduser:frontenduser /usr/share/nginx/html && \
+    chown -R frontenduser:frontenduser /var/cache/nginx && \
+    chown -R frontenduser:frontenduser /var/log/nginx && \
+    chown -R frontenduser:frontenduser /etc/nginx/conf.d
 
-# Copy dependency files first for better caching
-COPY --chown=frontenduser:frontenduser deno.json deps.ts ./
+RUN touch /var/run/nginx.pid && \
+    chown -R frontenduser:frontenduser /var/run/nginx.pid
 
-# Pre-cache dependencies
-RUN deno cache --reload deps.ts
-
-# Copy source code
-COPY --chown=frontenduser:frontenduser . .
-
-# Cache all TypeScript files and their dependencies
-RUN find src -name "*.ts" -o -name "*.tsx" | xargs deno cache --reload
-
-# Expose port
-EXPOSE 3000
-
-# Production health check (more frequent)
-HEALTHCHECK --interval=15s --timeout=3s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:3000/ || exit 1
-
-# Set production environment
-ENV NODE_ENV=production
-ENV PORT=3000
-
-# Run the server without watch mode for production
-CMD ["deno", "run", "--allow-net", "--allow-read", "--allow-write", "--allow-env", "dev.ts"]
+USER frontenduser
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]

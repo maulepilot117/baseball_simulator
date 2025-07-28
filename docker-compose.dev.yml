@@ -13,6 +13,7 @@ services:
       - DEBUG=true
       - LOG_LEVEL=debug
       - HOT_RELOAD=true
+      - DB_NAME=baseball_sim_dev
     command: ["python", "main.py", "--reload"]
 
   # API Gateway with development settings
@@ -25,6 +26,7 @@ services:
       - GIN_MODE=debug
       - LOG_LEVEL=debug
       - HOT_RELOAD=true
+      - DB_NAME=baseball_sim_dev
     ports:
       - "8080:8080"
       # Additional port for debugging
@@ -37,6 +39,7 @@ services:
     environment:
       - LOG_LEVEL=debug
       - DEBUG=true
+      - DB_NAME=baseball_sim_dev
     ports:
       - "8081:8081"
       # Additional port for debugging

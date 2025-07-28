@@ -1,7 +1,8 @@
 console.log("main.tsx starting...");
 
-import { createRoot } from "../deps.ts";
-import App from "./App.tsx";
+import React from "react";
+import { createRoot } from "react-dom/client";
+import App from "./App";
 
 const rootElement = document.getElementById("root");
 console.log("Root element found:", !!rootElement);
@@ -20,7 +21,12 @@ if (!rootElement) {
     console.error("Error rendering App:", error);
     
     root.render(
-      <div style={{ padding: "20px", backgroundColor: "#f8d7da", border: "2px solid #dc3545", margin: "20px" }}>
+      <div style={{ 
+        padding: "20px", 
+        backgroundColor: "#f8d7da", 
+        border: "2px solid #dc3545", 
+        margin: "20px" 
+      }}>
         <h1 style={{ color: "#dc3545" }}>❌ Render Error</h1>
         <p>Failed to render the app: {error.message}</p>
         <button 

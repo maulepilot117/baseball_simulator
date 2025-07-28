@@ -1,7 +1,7 @@
-// API Configuration
-const API_BASE_URL = "http://localhost:8080/api/v1";
-const SIMULATION_API_URL = "http://localhost:8081";
-const DATA_FETCHER_URL = "http://localhost:8082";
+// API Configuration - Use relative URLs with Vite proxy
+const API_BASE_URL = "/api/v1";
+const SIMULATION_API_URL = "/sim";
+const DATA_FETCHER_URL = "/data";
 
 // Types for API responses
 export interface ApiResponse<T> {
