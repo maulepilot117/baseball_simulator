@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: data-fetcher
+  namespace: baseball-sim
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: data-fetcher
+  template:
+    metadata:
+      labels:
+        app: data-fetcher
+    spec:
+      containers:
+      - name: data-fetcher
+        image: baseball-sim/data-fetcher:latest
+        imagePullPolicy: Never  # For local k3s, use locally built images
+        ports:
+        - containerPort: 8082
+        env:
+        - name: DATABASE_URL
+          value: "postgres://baseball_admin:baseball_password@postgres-service:5432/baseball_db?sslmode=disable"
+        - name: PORT
+          value: "8082"
+        - name: MLB_API_BASE_URL
+          value: "https://statsapi.mlb.com/api/v1"
+        - name: FETCH_INTERVAL
+          value: "3600"  # 1 hour
+        - name: MAX_RETRIES
+          value: "3"
+        - name: RATE_LIMIT_PER_MINUTE
+          value: "60"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8082
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8082
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false

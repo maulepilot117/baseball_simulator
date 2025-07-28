@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sim-engine
+  namespace: baseball-sim
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: sim-engine
+  template:
+    metadata:
+      labels:
+        app: sim-engine
+    spec:
+      containers:
+      - name: sim-engine
+        image: baseball-sim/sim-engine:latest
+        imagePullPolicy: Never  # For local k3s, use locally built images
+        ports:
+        - containerPort: 8081
+        env:
+        - name: DATABASE_URL
+          value: "postgres://baseball_admin:baseball_password@postgres-service:5432/baseball_db?sslmode=disable"
+        - name: PORT
+          value: "8081"
+        - name: SIMULATION_RUNS
+          value: "1000"
+        - name: MAX_WORKERS
+          value: "4"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8081
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8081
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
