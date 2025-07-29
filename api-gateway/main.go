@@ -86,6 +86,9 @@ func NewServer(config *Config) (*Server, error) {
 }
 
 func (s *Server) setupRoutes() {
+	// Root endpoint for API documentation
+	s.router.HandleFunc("/", s.rootHandler).Methods("GET")
+	
 	// API version prefix
 	api := s.router.PathPrefix("/api/v1").Subrouter()
 
@@ -114,6 +117,9 @@ func (s *Server) setupRoutes() {
 	// Data update endpoints
 	api.HandleFunc("/data/refresh", s.refreshDataHandler).Methods("POST")
 	api.HandleFunc("/data/status", s.dataStatusHandler).Methods("GET")
+	
+	// API status endpoint
+	api.HandleFunc("/status", s.apiStatusHandler).Methods("GET")
 
 	// Apply middleware
 	s.router.Use(s.loggingMiddleware)
@@ -181,6 +187,37 @@ func (s *Server) recoveryMiddleware(next http.Handler) http.Handler {
 }
 
 // Handlers
+func (s *Server) rootHandler(w http.ResponseWriter, r *http.Request) {
+	apiInfo := map[string]interface{}{
+		"service": "Baseball Simulation API Gateway",
+		"version": "2.0.0",
+		"status":  "online",
+		"time":    time.Now().UTC(),
+		"endpoints": map[string]interface{}{
+			"health":     "/api/v1/health",
+			"teams":      "/api/v1/teams",
+			"players":    "/api/v1/players",
+			"games":      "/api/v1/games",
+			"simulations": "/api/v1/simulations",
+		},
+		"documentation": "Baseball simulation system with MLB data integration and Monte Carlo predictions",
+		"frontend":      "http://localhost:3000",
+	}
+
+	// Check database connection for status
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+
+	if err := s.db.Ping(ctx); err != nil {
+		apiInfo["status"] = "degraded"
+		apiInfo["database"] = "disconnected"
+	} else {
+		apiInfo["database"] = "connected"
+	}
+
+	writeJSON(w, apiInfo)
+}
+
 func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
 	health := map[string]interface{}{
 		"status":   "healthy",
@@ -210,8 +247,8 @@ func (s *Server) getTeamsHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Build base query
 	baseQuery := `
-		SELECT t.id, t.team_id, t.name, t.city, t.abbreviation, t.league, 
-		       t.division, t.founded, t.stadium, t.manager, t.created_at, t.updated_at
+		SELECT t.id, t.team_id, t.name, t.abbreviation, t.league, 
+		       t.division, t.stadium_id, t.created_at, t.updated_at
 		FROM teams t`
 
 	// Count query for pagination
@@ -246,9 +283,8 @@ func (s *Server) getTeamsHandler(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var team Team
 		err := rows.Scan(
-			&team.ID, &team.TeamID, &team.Name, &team.City, &team.Abbreviation,
-			&team.League, &team.Division, &team.Founded, &team.Stadium,
-			&team.Manager, &team.CreatedAt, &team.UpdatedAt,
+			&team.ID, &team.TeamID, &team.Name, &team.Abbreviation,
+			&team.League, &team.Division, &team.Stadium, &team.CreatedAt, &team.UpdatedAt,
 		)
 		if err != nil {
 			writeError(w, "Failed to scan team", http.StatusInternalServerError)
@@ -274,16 +310,15 @@ func (s *Server) getTeamHandler(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	query := `
-		SELECT t.id, t.team_id, t.name, t.city, t.abbreviation, t.league, 
-		       t.division, t.founded, t.stadium, t.manager, t.created_at, t.updated_at
+		SELECT t.id, t.team_id, t.name, t.abbreviation, t.league, 
+		       t.division, t.stadium_id, t.created_at, t.updated_at
 		FROM teams t
 		WHERE t.id = $1 OR t.team_id = $1`
 
 	var team Team
 	err := s.db.QueryRow(ctx, query, teamID).Scan(
-		&team.ID, &team.TeamID, &team.Name, &team.City, &team.Abbreviation,
-		&team.League, &team.Division, &team.Founded, &team.Stadium,
-		&team.Manager, &team.CreatedAt, &team.UpdatedAt,
+		&team.ID, &team.TeamID, &team.Name, &team.Abbreviation,
+		&team.League, &team.Division, &team.Stadium, &team.CreatedAt, &team.UpdatedAt,
 	)
 
 	if err != nil {
@@ -369,7 +404,6 @@ func (s *Server) getPlayersHandler(w http.ResponseWriter, r *http.Request) {
 			p.Team = &Team{
 				ID:           p.TeamID,
 				Name:         *teamName,
-				City:         *teamCity,
 				Abbreviation: *teamAbbr,
 			}
 		}
@@ -431,7 +465,6 @@ func (s *Server) getPlayerHandler(w http.ResponseWriter, r *http.Request) {
 			ID:           *teamInternalID,
 			TeamID:       *teamID,
 			Name:         *teamName,
-			City:         *teamCity,
 			Abbreviation: *teamAbbr,
 		}
 	}
@@ -591,7 +624,6 @@ func (s *Server) getGamesHandler(w http.ResponseWriter, r *http.Request) {
 			g.HomeTeam = &Team{
 				ID:           g.HomeTeamID,
 				Name:         *homeTeamName,
-				City:         *homeTeamCity,
 				Abbreviation: *homeTeamAbbr,
 			}
 		}
@@ -599,7 +631,6 @@ func (s *Server) getGamesHandler(w http.ResponseWriter, r *http.Request) {
 			g.AwayTeam = &Team{
 				ID:           g.AwayTeamID,
 				Name:         *awayTeamName,
-				City:         *awayTeamCity,
 				Abbreviation: *awayTeamAbbr,
 			}
 		}
@@ -607,7 +638,6 @@ func (s *Server) getGamesHandler(w http.ResponseWriter, r *http.Request) {
 			g.Stadium = &Stadium{
 				ID:   g.StadiumID,
 				Name: *stadiumName,
-				City: *stadiumCity,
 			}
 		}
 
@@ -677,7 +707,6 @@ func (s *Server) getGameHandler(w http.ResponseWriter, r *http.Request) {
 			ID:           g.HomeTeamID,
 			TeamID:       *homeTeamExternalID,
 			Name:         *homeTeamName,
-			City:         *homeTeamCity,
 			Abbreviation: *homeTeamAbbr,
 		}
 	}
@@ -686,7 +715,6 @@ func (s *Server) getGameHandler(w http.ResponseWriter, r *http.Request) {
 			ID:           g.AwayTeamID,
 			TeamID:       *awayTeamExternalID,
 			Name:         *awayTeamName,
-			City:         *awayTeamCity,
 			Abbreviation: *awayTeamAbbr,
 		}
 	}
@@ -694,7 +722,6 @@ func (s *Server) getGameHandler(w http.ResponseWriter, r *http.Request) {
 		g.Stadium = &Stadium{
 			ID:       g.StadiumID,
 			Name:     *stadiumName,
-			City:     *stadiumCity,
 			Capacity: stadiumCapacity,
 		}
 	}
@@ -761,7 +788,6 @@ func (s *Server) getGamesByDateHandler(w http.ResponseWriter, r *http.Request) {
 			g.HomeTeam = &Team{
 				ID:           g.HomeTeamID,
 				Name:         *homeTeamName,
-				City:         *homeTeamCity,
 				Abbreviation: *homeTeamAbbr,
 			}
 		}
@@ -769,7 +795,6 @@ func (s *Server) getGamesByDateHandler(w http.ResponseWriter, r *http.Request) {
 			g.AwayTeam = &Team{
 				ID:           g.AwayTeamID,
 				Name:         *awayTeamName,
-				City:         *awayTeamCity,
 				Abbreviation: *awayTeamAbbr,
 			}
 		}
@@ -973,6 +998,43 @@ func (s *Server) dataStatusHandler(w http.ResponseWriter, r *http.Request) {
 		"database_status":     status,
 		"data_fetcher_status": dataFetcherStatus,
 	})
+}
+
+func (s *Server) apiStatusHandler(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := contextWithTimeout(r.Context())
+	defer cancel()
+
+	status := map[string]interface{}{
+		"service": "Baseball Simulation API Gateway", 
+		"version": "2.0.0",
+		"status":  "online",
+		"time":    time.Now().UTC(),
+	}
+
+	// Check database connection
+	if err := s.db.Ping(ctx); err != nil {
+		status["database"] = "disconnected"
+		status["status"] = "degraded"
+	} else {
+		status["database"] = "connected"
+	}
+
+	// Check external services
+	services := map[string]string{
+		"sim_engine":   s.config.SimEngineURL + "/health",
+		"data_fetcher": s.config.DataFetcherURL + "/health",
+	}
+
+	for name, url := range services {
+		_, err := http.Get(url)
+		if err != nil {
+			status[name] = "offline"
+		} else {
+			status[name] = "online"
+		}
+	}
+
+	writeJSON(w, status)
 }
 
 // Helper types and functions

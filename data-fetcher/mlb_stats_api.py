@@ -90,15 +90,42 @@ class DataValidator:
     
     @staticmethod
     def validate_player_data(player: Dict) -> Dict:
-        """Validate player data"""
-        required_fields = ['mlb_id', 'first_name', 'last_name']
+        """Validate player data with intelligent name handling"""
         errors = []
         
+        # Handle name splitting from fullName if first_name/last_name are missing
+        if (not player.get('first_name') or not player.get('last_name')) and player.get('full_name'):
+            full_name = player['full_name'].strip()
+            if full_name:
+                name_parts = full_name.split()
+                if len(name_parts) == 1:
+                    # Single name - use as both first and last
+                    player['first_name'] = name_parts[0]
+                    player['last_name'] = name_parts[0]
+                elif len(name_parts) == 2:
+                    # Standard first last
+                    player['first_name'] = name_parts[0]
+                    player['last_name'] = name_parts[1]
+                elif len(name_parts) == 3:
+                    # Three names - first + middle as first_name, last as last_name
+                    player['first_name'] = f"{name_parts[0]} {name_parts[1]}"
+                    player['last_name'] = name_parts[2]
+                else:
+                    # More than 3 names - first as first_name, rest as last_name
+                    player['first_name'] = name_parts[0]
+                    player['last_name'] = ' '.join(name_parts[1:])
+        
+        # Required fields check
+        required_fields = ['mlb_id']
         for field in required_fields:
             if not player.get(field):
                 errors.append(f"Missing required field: {field}")
         
-        # Validate names
+        # Ensure we have names after processing
+        if not player.get('first_name') and not player.get('last_name') and not player.get('full_name'):
+            errors.append("Player must have either first_name/last_name or full_name")
+        
+        # Validate name lengths
         if player.get('first_name') and len(player['first_name']) > 100:
             errors.append("First name too long (max 100 chars)")
         if player.get('last_name') and len(player['last_name']) > 100:
@@ -916,23 +943,35 @@ class MLBStatsAPI:
             # Validate player data
             validated_player = DataValidator.validate_player_data(player)
             
+            # Ensure full_name is populated
+            if not validated_player.get('full_name'):
+                first = validated_player.get('first_name', '')
+                last = validated_player.get('last_name', '')
+                if first and last and first != last:
+                    validated_player['full_name'] = f"{first} {last}"
+                elif first:
+                    validated_player['full_name'] = first
+                elif last:
+                    validated_player['full_name'] = last
+            
             # Get team UUID
             team_uuid = await self._get_team_uuid_by_mlb_id(validated_player.get('team_id'))
             
             # Save player
             player_uuid = await self.db_pool.fetchval("""
-                INSERT INTO players (player_id, first_name, last_name, birth_date,
+                INSERT INTO players (player_id, first_name, last_name, full_name, birth_date,
                                    position, bats, throws, team_id, status)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 ON CONFLICT (player_id) DO UPDATE
                 SET first_name = EXCLUDED.first_name,
                     last_name = EXCLUDED.last_name,
+                    full_name = EXCLUDED.full_name,
                     team_id = EXCLUDED.team_id,
                     position = EXCLUDED.position,
                     status = EXCLUDED.status
                 RETURNING id
             """, f"mlb_{validated_player['mlb_id']}", validated_player.get('first_name'), validated_player.get('last_name'),
-                validated_player.get('birth_date'), validated_player.get('position'), validated_player.get('bats'),
+                validated_player.get('full_name'), validated_player.get('birth_date'), validated_player.get('position'), validated_player.get('bats'),
                 validated_player.get('throws'), team_uuid, validated_player.get('status', 'Active'))
             
             # Save MLB ID mapping
