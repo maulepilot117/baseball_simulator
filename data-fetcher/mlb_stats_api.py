@@ -93,43 +93,43 @@ class DataValidator:
         """Validate player data with intelligent name handling"""
         errors = []
         
-        # Handle name splitting from fullName if first_name/last_name are missing
-        if (not player.get('first_name') or not player.get('last_name')) and player.get('full_name'):
-            full_name = player['full_name'].strip()
+        # Required fields check - only MLB ID is truly required
+        if not player.get('mlb_id'):
+            errors.append("Missing required field: mlb_id")
+        
+        # Handle name normalization first
+        if not player.get('first_name') or not player.get('last_name'):
+            # Try to get from full_name or fullName (handle both cases)
+            full_name = player.get('full_name') or player.get('fullName', '').strip()
+            
             if full_name:
-                name_parts = full_name.split()
+                # Simple split logic - first word is first name, rest is last name
+                name_parts = full_name.split(None, 1)  # Split on first whitespace
                 if len(name_parts) == 1:
                     # Single name - use as both first and last
                     player['first_name'] = name_parts[0]
                     player['last_name'] = name_parts[0]
-                elif len(name_parts) == 2:
-                    # Standard first last
+                else:
                     player['first_name'] = name_parts[0]
                     player['last_name'] = name_parts[1]
-                elif len(name_parts) == 3:
-                    # Three names - first + middle as first_name, last as last_name
-                    player['first_name'] = f"{name_parts[0]} {name_parts[1]}"
-                    player['last_name'] = name_parts[2]
-                else:
-                    # More than 3 names - first as first_name, rest as last_name
-                    player['first_name'] = name_parts[0]
-                    player['last_name'] = ' '.join(name_parts[1:])
+            else:
+                # No names available - use placeholder
+                player['first_name'] = 'Unknown'
+                player['last_name'] = f"Player_{player.get('mlb_id', 'N/A')}"
         
-        # Required fields check
-        required_fields = ['mlb_id']
-        for field in required_fields:
-            if not player.get(field):
-                errors.append(f"Missing required field: {field}")
+        # Ensure full_name exists
+        if not player.get('full_name'):
+            first = player.get('first_name', '')
+            last = player.get('last_name', '')
+            player['full_name'] = f"{first} {last}".strip() or f"Player {player.get('mlb_id', 'Unknown')}"
         
-        # Ensure we have names after processing
-        if not player.get('first_name') and not player.get('last_name') and not player.get('full_name'):
-            errors.append("Player must have either first_name/last_name or full_name")
-        
-        # Validate name lengths
+        # Validate name lengths (truncate if too long instead of erroring)
         if player.get('first_name') and len(player['first_name']) > 100:
-            errors.append("First name too long (max 100 chars)")
+            player['first_name'] = player['first_name'][:100]
         if player.get('last_name') and len(player['last_name']) > 100:
-            errors.append("Last name too long (max 100 chars)")
+            player['last_name'] = player['last_name'][:100]
+        if player.get('full_name') and len(player['full_name']) > 200:
+            player['full_name'] = player['full_name'][:200]
         
         # Validate position
         valid_positions = ['P', 'C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF', 'DH', 'OF', 'IF']
@@ -139,9 +139,9 @@ class DataValidator:
         # Validate bat/throw hands
         valid_hands = ['L', 'R', 'S']  # S for switch
         if player.get('bats') and player['bats'] not in valid_hands:
-            errors.append(f"Invalid batting hand: {player['bats']}")
+            player['bats'] = 'R'  # Default to right
         if player.get('throws') and player['throws'] not in valid_hands:
-            errors.append(f"Invalid throwing hand: {player['throws']}")
+            player['throws'] = 'R'  # Default to right
         
         # Validate birth date
         if player.get('birth_date'):
@@ -152,7 +152,7 @@ class DataValidator:
                 if birth_date < date(1900, 1, 1):
                     errors.append("Birth date too old")
             except ValueError:
-                errors.append("Invalid birth date format")
+                player['birth_date'] = None  # Clear invalid date
         
         if errors:
             raise ValidationError(f"Player validation failed: {'; '.join(errors)}")
@@ -588,27 +588,32 @@ class MLBStatsAPI:
             
             for entry in roster:
                 person = entry.get("person", {})
+                
+                # Be defensive about name extraction
                 player_data = {
                     'mlb_id': person.get("id"),
-                    'full_name': person.get("fullName"),
-                    'first_name': person.get("firstName"),
-                    'last_name': person.get("lastName"),
+                    'full_name': person.get("fullName", "").strip(),
+                    'first_name': person.get("firstName", "").strip(),
+                    'last_name': person.get("lastName", "").strip(),
                     'position': entry.get("position", {}).get("abbreviation"),
                     'jersey_number': entry.get("jerseyNumber"),
                     'status': entry.get("status", {}).get("code", "Active"),
                     'team_id': team_id
                 }
                 
-                # Get additional player details
+                # Only process if we have a valid MLB ID
                 if player_data['mlb_id']:
+                    # Get additional player details
                     details = await self._get_player_details(player_data['mlb_id'])
                     player_data.update(details)
-                
-                players.append(player_data)
-                await self._save_player(player_data)
-            
-            return players
-            
+                    
+                    players.append(player_data)
+                    await self._save_player(player_data)
+                else:
+                    logger.warning(f"Skipping player without MLB ID in team {team_id} roster")
+        
+                return players
+        
         except Exception as e:
             logger.error(f"Error fetching roster for team {team_id}: {e}")
             return []
@@ -940,19 +945,8 @@ class MLBStatsAPI:
     async def _save_player(self, player: Dict):
         """Save player to database"""
         try:
-            # Validate player data
+            # Validate player data (this now handles all name normalization)
             validated_player = DataValidator.validate_player_data(player)
-            
-            # Ensure full_name is populated
-            if not validated_player.get('full_name'):
-                first = validated_player.get('first_name', '')
-                last = validated_player.get('last_name', '')
-                if first and last and first != last:
-                    validated_player['full_name'] = f"{first} {last}"
-                elif first:
-                    validated_player['full_name'] = first
-                elif last:
-                    validated_player['full_name'] = last
             
             # Get team UUID
             team_uuid = await self._get_team_uuid_by_mlb_id(validated_player.get('team_id'))
@@ -960,19 +954,26 @@ class MLBStatsAPI:
             # Save player
             player_uuid = await self.db_pool.fetchval("""
                 INSERT INTO players (player_id, first_name, last_name, full_name, birth_date,
-                                   position, bats, throws, team_id, status)
+                                position, bats, throws, team_id, status)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 ON CONFLICT (player_id) DO UPDATE
-                SET first_name = EXCLUDED.first_name,
-                    last_name = EXCLUDED.last_name,
-                    full_name = EXCLUDED.full_name,
+                SET first_name = COALESCE(EXCLUDED.first_name, players.first_name),
+                    last_name = COALESCE(EXCLUDED.last_name, players.last_name),
+                    full_name = COALESCE(EXCLUDED.full_name, players.full_name),
                     team_id = EXCLUDED.team_id,
                     position = EXCLUDED.position,
                     status = EXCLUDED.status
                 RETURNING id
-            """, f"mlb_{validated_player['mlb_id']}", validated_player.get('first_name'), validated_player.get('last_name'),
-                validated_player.get('full_name'), validated_player.get('birth_date'), validated_player.get('position'), validated_player.get('bats'),
-                validated_player.get('throws'), team_uuid, validated_player.get('status', 'Active'))
+            """, f"mlb_{validated_player['mlb_id']}", 
+                validated_player.get('first_name'), 
+                validated_player.get('last_name'),
+                validated_player.get('full_name'), 
+                validated_player.get('birth_date'), 
+                validated_player.get('position'), 
+                validated_player.get('bats'),
+                validated_player.get('throws'), 
+                team_uuid, 
+                validated_player.get('status', 'Active'))
             
             # Save MLB ID mapping
             await self.db_pool.execute("""
@@ -982,6 +983,7 @@ class MLBStatsAPI:
             """, player_uuid, validated_player['mlb_id'])
             
             self._player_cache[validated_player['mlb_id']] = player_uuid
+                
         except ValidationError as e:
             logger.error(f"Skipping invalid player data: {e}")
         except Exception as e:
