@@ -19,11 +19,8 @@ FROM base AS development
 # Copy requirements first for better caching
 COPY requirements.txt .
 
-# Install Python dependencies with dev extras
+# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Install development tools
-RUN pip install --no-cache-dir pytest black flake8 mypy
 
 # Create non-root user
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
@@ -34,7 +31,7 @@ USER appuser
 # Expose port
 EXPOSE 8082
 
-# Health check for development
+# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8082/health || exit 1
 
@@ -49,7 +46,7 @@ COPY requirements.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir gunicorn uvicorn[standard]
+    pip install --no-cache-dir gunicorn
 
 # Copy application code
 COPY . .
