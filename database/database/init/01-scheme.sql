@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS players (
     player_id VARCHAR(50) UNIQUE NOT NULL,
     first_name VARCHAR(100),
     last_name VARCHAR(100),
+    full_name VARCHAR(200) NOT NULL,
     birth_date DATE,
     position VARCHAR(10),
     bats VARCHAR(10),
@@ -57,7 +58,8 @@ CREATE TABLE IF NOT EXISTS players (
     team_id UUID REFERENCES teams(id),
     status VARCHAR(20) DEFAULT 'active',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    CONSTRAINT players_has_name_check CHECK (full_name IS NOT NULL AND full_name != '')
 );
 
 -- Umpires table
