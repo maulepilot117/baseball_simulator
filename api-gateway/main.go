@@ -395,7 +395,9 @@ func (s *Server) getPlayersHandler(w http.ResponseWriter, r *http.Request) {
 			&teamName, &teamCity, &teamAbbr,
 		)
 		if err != nil {
-			writeError(w, "Failed to scan player", http.StatusInternalServerError)
+			log.Printf("Failed to scan player: %v", err)
+			log.Printf("Query: %s", finalQuery)
+			writeError(w, fmt.Sprintf("Failed to scan player: %v", err), http.StatusInternalServerError)
 			return
 		}
 
