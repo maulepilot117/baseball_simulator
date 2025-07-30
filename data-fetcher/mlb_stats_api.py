@@ -358,7 +358,7 @@ class MLBStatsAPI:
                 player.get('first_name'), 
                 player.get('last_name'),
                 player['full_name'],  # This is guaranteed to exist after normalization
-                player.get('birth_date'), 
+                datetime.strptime(player.get('birth_date'), '%Y-%m-%d').date() if player.get('birth_date') else None, 
                 player.get('position'), 
                 player.get('bats', 'R'),
                 player.get('throws', 'R'), 

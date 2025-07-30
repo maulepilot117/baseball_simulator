@@ -13,7 +13,7 @@ from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
-from models import PlayerStatsRequest, LeaderboardRequest, FetchRequest, DataFetchStatus
+from models import PlayerStatsRequest, LeaderboardRequest, FetchRequest, DataFetchStatus, FetchType
 from mlb_stats_api import MLBStatsAPI
 
 # Configure logging
@@ -242,15 +242,15 @@ async def manual_fetch(db_pool: asyncpg.Pool, request: FetchRequest):
             end_date = request.end_date or datetime.now()
             start_date = request.start_date or (end_date - timedelta(days=30))
             
-            if request.fetch_type == FetchRequest.all:
+            if request.fetch_type == FetchType.all:
                 await mlb_api.fetch_all_data(start_date, end_date)
-            elif request.fetch_type == FetchRequest.teams:
+            elif request.fetch_type == FetchType.teams:
                 await mlb_api.fetch_teams_and_venues()
-            elif request.fetch_type == FetchRequest.players:
+            elif request.fetch_type == FetchType.players:
                 await mlb_api.fetch_all_players()
-            elif request.fetch_type == FetchRequest.games:
+            elif request.fetch_type == FetchType.games:
                 await mlb_api.fetch_games(start_date, end_date)
-            elif request.fetch_type == FetchRequest.stats and request.season:
+            elif request.fetch_type == FetchType.stats and request.season:
                 await mlb_api.fetch_season_stats(request.season)
         
         # Record completion
