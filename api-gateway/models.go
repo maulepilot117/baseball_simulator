@@ -26,7 +26,7 @@ type Player struct {
 	FullName     string     `json:"full_name" db:"full_name"`
 	Position     string     `json:"position" db:"position"`
 	TeamID       string     `json:"team_id" db:"team_id"`
-	JerseyNumber *int       `json:"jersey_number,omitempty" db:"jersey_number"`
+	JerseyNumber string       `json:"jersey_number,omitempty" db:"jersey_number"`
 	Height       string     `json:"height,omitempty" db:"height"`
 	Weight       *int       `json:"weight,omitempty" db:"weight"`
 	BirthDate    *time.Time `json:"birth_date,omitempty" db:"birth_date"`

@@ -386,10 +386,11 @@ func (s *Server) getPlayersHandler(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var p PlayerWithTeam
 		var teamName, teamCity, teamAbbr *string
+		var jerseyNumber *string  // Add this for nullable jersey_number
 
 		err := rows.Scan(
 			&p.ID, &p.PlayerID, &p.FirstName, &p.LastName, &p.FullName,
-			&p.Position, &p.TeamID, &p.JerseyNumber, &p.Height, &p.Weight,
+			&p.Position, &p.TeamID, &jerseyNumber, &p.Height, &p.Weight,  // Use &jerseyNumber instead of &p.JerseyNumber
 			&p.BirthDate, &p.BirthCity, &p.BirthCountry, &p.Bats, &p.Throws,
 			&p.DebutDate, &p.Status, &p.CreatedAt, &p.UpdatedAt,
 			&teamName, &teamCity, &teamAbbr,
@@ -399,6 +400,11 @@ func (s *Server) getPlayersHandler(w http.ResponseWriter, r *http.Request) {
 			log.Printf("Query: %s", finalQuery)
 			writeError(w, fmt.Sprintf("Failed to scan player: %v", err), http.StatusInternalServerError)
 			return
+		}
+
+		// Handle nullable jersey_number
+		if jerseyNumber != nil {
+			p.JerseyNumber = *jerseyNumber
 		}
 
 		// Add team information if available
@@ -443,10 +449,11 @@ func (s *Server) getPlayerHandler(w http.ResponseWriter, r *http.Request) {
 
 	var p PlayerWithTeam
 	var teamInternalID, teamID, teamName, teamCity, teamAbbr *string
+	var jerseyNumber *string  // Add this for nullable jersey_number
 
 	err := s.db.QueryRow(ctx, query, playerID).Scan(
 		&p.ID, &p.PlayerID, &p.FirstName, &p.LastName, &p.FullName,
-		&p.Position, &p.TeamID, &p.JerseyNumber, &p.Height, &p.Weight,
+		&p.Position, &p.TeamID, &jerseyNumber, &p.Height, &p.Weight,  // Use &jerseyNumber
 		&p.BirthDate, &p.BirthCity, &p.BirthCountry, &p.Bats, &p.Throws,
 		&p.DebutDate, &p.Status, &p.CreatedAt, &p.UpdatedAt,
 		&teamInternalID, &teamID, &teamName, &teamCity, &teamAbbr,
@@ -456,9 +463,15 @@ func (s *Server) getPlayerHandler(w http.ResponseWriter, r *http.Request) {
 		if err.Error() == "no rows in result set" {
 			writeError(w, "Player not found", http.StatusNotFound)
 		} else {
+			log.Printf("Failed to query player: %v", err)
 			writeError(w, "Failed to query player", http.StatusInternalServerError)
 		}
 		return
+	}
+
+	// Handle nullable jersey_number
+	if jerseyNumber != nil {
+		p.JerseyNumber = *jerseyNumber
 	}
 
 	// Add team information if available
