@@ -167,10 +167,6 @@ class MLBStatsAPI:
                     player_data = {
                         'mlb_id': person["id"],
                         'full_name': person.get("fullName", ""),
-                        'first_name': person.get("firstName", ""),
-                        'last_name': person.get("lastName", ""),
-                        'position': entry.get("position", {}).get("abbreviation"),
-                        'jersey_number': entry.get("jerseyNumber"),
                         'status': entry.get("status", {}).get("code", "Active"),
                         'team_id': team_id
                     }
@@ -201,7 +197,14 @@ class MLBStatsAPI:
                 'height': person.get("height"),
                 'weight': person.get("weight"),
                 'bats': person.get("batSide", {}).get("code"),
-                'throws': person.get("pitchHand", {}).get("code")
+                'throws': person.get("pitchHand", {}).get("code"),
+                'first_name': person.get("firstName"),
+                'last_name': person.get("lastName"),
+                'jersey_number': person.get("primaryNumber"),
+                'position': person.get("primaryPosition", {}).get("abbreviation"),
+                'debut_date': person.get("mlbDebutDate"),
+                'strike_zone_top': person.get("strikeZoneTop"),
+                'strike_zone_bottom': person.get("strikeZoneBottom")              
             }
         except:
             return {}
