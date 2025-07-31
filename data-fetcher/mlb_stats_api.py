@@ -62,9 +62,27 @@ class MLBStatsAPI:
             # 3. Fetch games
             await self.fetch_games(start_date, end_date)
             
-            # 4. Fetch and calculate stats for current season
-            current_season = datetime.now().year
-            await self.fetch_season_stats(current_season)
+            # 4. Fetch stats for multiple seasons based on settings.initial_years
+            current_year = datetime.now().year
+            seasons_to_fetch = []
+            
+            # Add current season if we're past April (when season starts)
+            if datetime.now().month >= 4:
+                seasons_to_fetch.append(current_year)
+            
+            # Add previous seasons based on initial_years setting
+            for i in range(1, settings.initial_years + 1):
+                seasons_to_fetch.append(current_year - i)
+            
+            logger.info(f"Will fetch stats for seasons: {seasons_to_fetch}")
+            
+            for season in seasons_to_fetch:
+                try:
+                    logger.info(f"Fetching stats for {season} season...")
+                    await self.fetch_season_stats(season)
+                except Exception as e:
+                    logger.error(f"Failed to fetch stats for {season}: {e}")
+                    # Continue with other seasons even if one fails
             
             logger.info("MLB data fetch completed successfully")
             
@@ -129,26 +147,46 @@ class MLBStatsAPI:
         """Fetch and calculate season statistics"""
         logger.info(f"Fetching stats for {season} season")
         
-        # Get all players
+        # Get all players with MLB IDs
         players = await self.db_pool.fetch("""
-            SELECT p.id, pm.mlb_id::int
+            SELECT p.id, pm.mlb_id::int, p.full_name
             FROM players p
             JOIN player_mlb_mapping pm ON p.id = pm.player_id
-            WHERE p.status = 'active'
+            WHERE p.status = 'A'
         """)
+        
+        logger.info(f"Found {len(players)} active players to fetch stats for")
+        
+        # Track success/failure
+        success_count = 0
+        error_count = 0
         
         # Process in batches to avoid overwhelming the API
         batch_size = 50
         for i in range(0, len(players), batch_size):
             batch = players[i:i + batch_size]
-            await asyncio.gather(*[
+            results = await asyncio.gather(*[
                 self._fetch_player_season_stats(player['id'], player['mlb_id'], season)
                 for player in batch
-            ])
+            ], return_exceptions=True)
+            
+            # Count successes and failures
+            for j, result in enumerate(results):
+                if isinstance(result, Exception):
+                    error_count += 1
+                    player = batch[j]
+                    logger.error(f"Failed to fetch stats for {player['full_name']} ({player['mlb_id']}): {result}")
+                else:
+                    success_count += 1
+            
+            logger.info(f"Processed batch {i//batch_size + 1}/{(len(players) + batch_size - 1)//batch_size}")
             await asyncio.sleep(1)  # Rate limiting between batches
         
-        # Calculate aggregated stats
-        await self.stats_calculator.calculate_all_season_stats(season)
+        logger.info(f"Stats fetch complete: {success_count} successful, {error_count} errors")
+    
+    # Calculate aggregated stats only if we have some successful fetches
+        if success_count > 0:
+            await self.stats_calculator.calculate_all_season_stats(season)
         
         logger.info(f"Completed stats processing for {season}")
     
@@ -164,10 +202,13 @@ class MLBStatsAPI:
             for entry in roster:
                 person = entry.get("person", {})
                 if person.get("id"):
+                    # Keep the original MLB status code
+                    status_code = entry.get("status", {}).get("code", "A")
+                    
                     player_data = {
                         'mlb_id': person["id"],
                         'full_name': person.get("fullName", ""),
-                        'status': entry.get("status", {}).get("code", "Active"),
+                        'status': status_code,  # Use the actual MLB status code
                         'team_id': team_id
                     }
                     
@@ -240,11 +281,15 @@ class MLBStatsAPI:
     async def _fetch_player_season_stats(self, player_uuid: str, mlb_id: int, season: int):
         """Fetch season stats for a player"""
         try:
+            # Add more detailed logging
+            logger.debug(f"Fetching stats for player {mlb_id} (UUID: {player_uuid}) for season {season}")
+            
             # Batting stats
             batting = await self._get(f"/people/{mlb_id}/stats", {
                 "stats": "season",
                 "group": "hitting",
-                "season": season
+                "season": season,
+                "sportId": 1
             })
             await self._process_stats(player_uuid, batting, 'batting', season)
             
@@ -252,7 +297,8 @@ class MLBStatsAPI:
             pitching = await self._get(f"/people/{mlb_id}/stats", {
                 "stats": "season",
                 "group": "pitching", 
-                "season": season
+                "season": season,
+                "sportId": 1
             })
             await self._process_stats(player_uuid, pitching, 'pitching', season)
             
@@ -260,25 +306,44 @@ class MLBStatsAPI:
             fielding = await self._get(f"/people/{mlb_id}/stats", {
                 "stats": "season",
                 "group": "fielding", 
-                "season": season
+                "season": season,
+                "sportId": 1
             })
             await self._process_stats(player_uuid, fielding, 'fielding', season)
             
         except Exception as e:
-            logger.error(f"Error fetching stats for player {mlb_id}: {e}")
+            logger.error(f"Error fetching stats for player {mlb_id} (season {season}): {e}")
+            raise
     
     async def _process_stats(self, player_uuid: str, stats_data: Dict, 
-                           stats_type: str, season: int):
+                       stats_type: str, season: int):
         """Process and save player statistics"""
+        # Add validation
+        if not stats_data or not isinstance(stats_data, dict):
+            logger.warning(f"Invalid stats data for player {player_uuid}, type {stats_type}")
+            return
+            
         stats_list = stats_data.get("stats", [])
         if not stats_list:
+            logger.debug(f"No stats found for player {player_uuid}, type {stats_type}, season {season}")
             return
+        
+        # Log the structure for debugging
+        logger.debug(f"Processing {len(stats_list)} stat groups for player {player_uuid}")
         
         for stat_group in stats_list:
             splits = stat_group.get("splits", [])
+            if not splits:
+                logger.debug(f"No splits found in stat group for player {player_uuid}")
+                continue
+                
             for split in splits:
                 stat = split.get("stat", {})
                 if stat:
+                    # Log what we're saving
+                    games_played = stat.get('gamesPlayed', 0)
+                    logger.debug(f"Saving {stats_type} stats for player {player_uuid}: {games_played} games")
+                    
                     # Save raw stats - let the calculator handle derived stats
                     await self.db_pool.execute("""
                         INSERT INTO player_season_aggregates 
@@ -288,8 +353,7 @@ class MLBStatsAPI:
                         SET aggregated_stats = EXCLUDED.aggregated_stats,
                             games_played = EXCLUDED.games_played,
                             last_updated = NOW()
-                    """, player_uuid, season, stats_type, json.dumps(stat), 
-                        stat.get('gamesPlayed', 0))
+                    """, player_uuid, season, stats_type, json.dumps(stat), games_played)
     
     # Save methods
     
@@ -367,7 +431,7 @@ class MLBStatsAPI:
                 player.get('bats', 'R'),
                 player.get('throws', 'R'), 
                 team_uuid, 
-                player.get('status', 'Active'),
+                player.get('status', 'A'),
                 player.get('jersey_number', ''),
                 datetime.strptime(player.get('debut_date'), '%Y-%m-%d').date() if player.get('debut_date') else None,
                 player.get('birth_city', ''),

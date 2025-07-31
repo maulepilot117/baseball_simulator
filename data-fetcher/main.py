@@ -13,13 +13,17 @@ from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
-from models import PlayerStatsRequest, LeaderboardRequest, FetchRequest, DataFetchStatus, FetchType
+from models import PlayerStatsRequest, LeaderboardRequest, FetchRequest, DataFetchStatus, FetchType, HistoricalStatsRequest
 from mlb_stats_api import MLBStatsAPI
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.DEBUG if os.getenv("DEBUG") == "true" else logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('data-fetcher.log', mode='a')
+    ]
 )
 logger = logging.getLogger(__name__)
 
@@ -226,6 +230,53 @@ async def trigger_manual_fetch(
     )
     
     return {"message": "Fetch triggered successfully"}
+
+@app.post("/fetch/historical-stats")
+async def fetch_historical_stats(
+    request: HistoricalStatsRequest,
+    background_tasks: BackgroundTasks
+):
+    """Fetch stats for a range of years"""
+    background_tasks.add_task(
+        fetch_stats_for_years,
+        app.state.db_pool,
+        request.start_year,
+        request.end_year
+    )
+    
+    return {
+        "message": f"Stats fetch for years {request.start_year}-{request.end_year} triggered successfully"
+    }
+
+
+async def fetch_stats_for_years(db_pool: asyncpg.Pool, start_year: int, end_year: int):
+    """Fetch stats for a range of years"""
+    try:
+        async with MLBStatsAPI(db_pool) as mlb_api:
+            for year in range(start_year, end_year + 1):
+                logger.info(f"Fetching stats for {year}")
+                try:
+                    await mlb_api.fetch_season_stats(year)
+                except Exception as e:
+                    logger.error(f"Error fetching stats for {year}: {e}")
+                    # Continue with other years
+    except Exception as e:
+        logger.error(f"Error in historical stats fetch: {e}")
+
+
+async def fetch_stats_for_years(db_pool: asyncpg.Pool, start_year: int, end_year: int):
+    """Fetch stats for a range of years"""
+    try:
+        async with MLBStatsAPI(db_pool) as mlb_api:
+            for year in range(start_year, end_year + 1):
+                logger.info(f"Fetching stats for {year}")
+                try:
+                    await mlb_api.fetch_season_stats(year)
+                except Exception as e:
+                    logger.error(f"Error fetching stats for {year}: {e}")
+                    # Continue with other years
+    except Exception as e:
+        logger.error(f"Error in historical stats fetch: {e}")
 
 
 async def manual_fetch(db_pool: asyncpg.Pool, request: FetchRequest):

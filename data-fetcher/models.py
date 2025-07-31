@@ -58,3 +58,13 @@ class DataFetchStatus(BaseModel):
     total_teams: int
     total_players: int
     total_games: int
+
+class HistoricalStatsRequest(BaseModel):
+    start_year: int = Field(default=2020, ge=1876, le=datetime.now().year)
+    end_year: int = Field(default=2024, ge=1876, le=datetime.now().year)
+    
+    @validator('end_year')
+    def validate_year_range(cls, v, values):
+        if 'start_year' in values and v < values['start_year']:
+            raise ValueError('end_year must be greater than or equal to start_year')
+        return v

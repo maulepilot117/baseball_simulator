@@ -22,10 +22,13 @@ class Settings(BaseSettings):
     mlb_api_base_url: str = "https://statsapi.mlb.com/api/v1"
     request_timeout: int = 30
     max_retries: int = 3
+
+    debug: bool = True  # Enable debug mode for detailed logging
     
     class Config:
         env_file = ".env"
         case_sensitive = False
+        extra = "ignore"
 
 
 settings = Settings()
