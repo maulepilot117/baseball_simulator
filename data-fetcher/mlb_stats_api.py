@@ -347,8 +347,9 @@ class MLBStatsAPI:
             # Save player
             player_uuid = await self.db_pool.fetchval("""
                 INSERT INTO players (player_id, first_name, last_name, full_name, birth_date,
-                                   position, bats, throws, team_id, status)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                                   position, bats, throws, team_id, status, jersey_number, debut_date, birth_city, birth_country, height, weight,
+                                    strike_zone_top, strike_zone_btm)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
                 ON CONFLICT (player_id) DO UPDATE
                 SET first_name = COALESCE(EXCLUDED.first_name, players.first_name),
                     last_name = COALESCE(EXCLUDED.last_name, players.last_name),
@@ -366,7 +367,17 @@ class MLBStatsAPI:
                 player.get('bats', 'R'),
                 player.get('throws', 'R'), 
                 team_uuid, 
-                player.get('status', 'Active'))
+                player.get('status', 'Active'),
+                player.get('jersey_number', ''),
+                datetime.strptime(player.get('debut_date'), '%Y-%m-%d').date() if player.get('debut_date') else None,
+                player.get('birth_city', ''),
+                player.get('birth_country', ''),
+                player.get('height', ''),
+                player.get('weight', ''),
+                player.get('strike_zone_top', 0),
+                player.get('strike_zone_bottom', 0)
+            )
+
             
             # Save MLB ID mapping
             await self.db_pool.execute("""
