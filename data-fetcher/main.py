@@ -13,7 +13,7 @@ from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
-from models import PlayerStatsRequest, LeaderboardRequest, FetchRequest, DataFetchStatus, FetchType, HistoricalStatsRequest
+from models import PlayerStatsRequest, LeaderboardRequest, FetchRequest, DataFetchStatus, FetchType, HistoricalStatsRequest, ErrorResponse
 from mlb_stats_api import MLBStatsAPI
 
 # Configure logging
@@ -41,12 +41,12 @@ async def lifespan(app: FastAPI):
         user=settings.db_user,
         password=settings.db_password,
         database=settings.db_name,
-        min_size=5,
-        max_size=20
+        min_size=20,  # Increased from 5
+        max_size=50   # Increased from 20
     )
     
     # Ensure required tables exist
-    await ensure_database_tables(app.state.db_pool)
+    logger.info("Connected to database with existing scheme.")
     
     # Start background fetch task
     app.state.fetch_task = asyncio.create_task(
@@ -79,38 +79,11 @@ app = FastAPI(
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
+    allow_origins=settings.cors_origins_list,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
-
-
-async def ensure_database_tables(db_pool: asyncpg.Pool):
-    """Ensure required database tables exist"""
-    # Add player MLB mapping table if it doesn't exist
-    await db_pool.execute("""
-        CREATE TABLE IF NOT EXISTS player_mlb_mapping (
-            player_id UUID PRIMARY KEY REFERENCES players(id),
-            mlb_id INTEGER UNIQUE NOT NULL,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-        );
-        
-        CREATE INDEX IF NOT EXISTS idx_player_mlb_mapping_mlb_id 
-        ON player_mlb_mapping(mlb_id);
-    """)
-    
-    # Add data fetch status table
-    await db_pool.execute("""
-        CREATE TABLE IF NOT EXISTS data_fetch_status (
-            id SERIAL PRIMARY KEY,
-            started_at TIMESTAMP WITH TIME ZONE,
-            completed_at TIMESTAMP WITH TIME ZONE,
-            status VARCHAR(20),
-            error_message TEXT,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-        )
-    """)
 
 
 async def periodic_data_fetch(db_pool: asyncpg.Pool):
@@ -127,7 +100,8 @@ async def periodic_data_fetch(db_pool: asyncpg.Pool):
             
             # Create MLB API client and fetch data
             async with MLBStatsAPI(db_pool) as mlb_api:
-                end_date = datetime.now()
+                # Only fetch up to yesterday to avoid in-progress/future games
+                end_date = datetime.now() - timedelta(days=1)  # Changed: subtract 1 day
                 start_date = end_date - timedelta(days=7)
                 await mlb_api.fetch_all_data(start_date, end_date)
             
@@ -264,21 +238,6 @@ async def fetch_stats_for_years(db_pool: asyncpg.Pool, start_year: int, end_year
         logger.error(f"Error in historical stats fetch: {e}")
 
 
-async def fetch_stats_for_years(db_pool: asyncpg.Pool, start_year: int, end_year: int):
-    """Fetch stats for a range of years"""
-    try:
-        async with MLBStatsAPI(db_pool) as mlb_api:
-            for year in range(start_year, end_year + 1):
-                logger.info(f"Fetching stats for {year}")
-                try:
-                    await mlb_api.fetch_season_stats(year)
-                except Exception as e:
-                    logger.error(f"Error fetching stats for {year}: {e}")
-                    # Continue with other years
-    except Exception as e:
-        logger.error(f"Error in historical stats fetch: {e}")
-
-
 async def manual_fetch(db_pool: asyncpg.Pool, request: FetchRequest):
     """Perform manual data fetch"""
     try:
@@ -290,8 +249,12 @@ async def manual_fetch(db_pool: asyncpg.Pool, request: FetchRequest):
         
         async with MLBStatsAPI(db_pool) as mlb_api:
             # Default date range if not provided
-            end_date = request.end_date or datetime.now()
+            end_date = request.end_date or (datetime.now() - timedelta(days=1))  # Changed
             start_date = request.start_date or (end_date - timedelta(days=30))
+            
+            # Ensure we're not fetching future games
+            if end_date.date() >= datetime.now().date():
+                end_date = datetime.now() - timedelta(days=1)
             
             if request.fetch_type == FetchType.all:
                 await mlb_api.fetch_all_data(start_date, end_date)

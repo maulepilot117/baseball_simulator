@@ -2,7 +2,7 @@
 Simple configuration management using Pydantic
 """
 from pydantic_settings import BaseSettings
-from typing import Optional
+from typing import Optional, List
 
 
 class Settings(BaseSettings):
@@ -23,8 +23,23 @@ class Settings(BaseSettings):
     request_timeout: int = 30
     max_retries: int = 3
 
-    debug: bool = True  # Enable debug mode for detailed logging
+    debug: bool = True # Enable debug mode for detailed logging
+
+    http_max_connections: int = 100
+    http_keepalive_connections: int = 50
+
+    skip_incomplete_games: bool = True
+    fetch_spring_training: bool = False
+    game_fetch_retry_on_404: bool = False
     
+    # CORS settings
+    cors_origins: str = "http://localhost:3000,http://localhost:5173"
+    
+    @property
+    def cors_origins_list(self) -> List[str]:
+        return [origin.strip() for origin in self.cors_origins.split(",")]
+
+
     class Config:
         env_file = ".env"
         case_sensitive = False

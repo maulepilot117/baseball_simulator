@@ -59,6 +59,11 @@ class DataFetchStatus(BaseModel):
     total_players: int
     total_games: int
 
+class ErrorResponse(BaseModel):
+    detail: str
+    error_code: Optional[str] = None
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+
 class HistoricalStatsRequest(BaseModel):
     start_year: int = Field(default=2020, ge=1876, le=datetime.now().year)
     end_year: int = Field(default=2024, ge=1876, le=datetime.now().year)
