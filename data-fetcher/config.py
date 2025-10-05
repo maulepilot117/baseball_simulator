@@ -23,7 +23,8 @@ class Settings(BaseSettings):
     request_timeout: int = 30
     max_retries: int = 3
 
-    debug: bool = True # Enable debug mode for detailed logging
+    # Security: Debug mode disabled by default, enable via environment variable
+    debug: bool = False
 
     http_max_connections: int = 100
     http_keepalive_connections: int = 50

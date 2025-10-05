@@ -179,11 +179,18 @@ type ServiceHealth struct {
 	OverallStatus string `json:"overall_status"`
 }
 
-// Umpire represents an umpire with performance metrics
+// Umpire represents an umpire (basic info)
 type Umpire struct {
-	ID                       string     `json:"id" db:"id"`
-	UmpireID                 string     `json:"umpire_id" db:"umpire_id"`
-	Name                     string     `json:"name" db:"name"`
+	ID         string                 `json:"id" db:"id"`
+	UmpireID   string                 `json:"umpire_id" db:"umpire_id"`
+	Name       string                 `json:"name" db:"name"`
+	Tendencies map[string]interface{} `json:"tendencies,omitempty" db:"tendencies"`
+	CreatedAt  time.Time              `json:"created_at" db:"created_at"`
+}
+
+// UmpireSeasonStats represents season-specific umpire performance metrics
+type UmpireSeasonStats struct {
+	Season                   int        `json:"season" db:"season"`
 	GamesUmped               int        `json:"games_umped" db:"games_umped"`
 	AccuracyPct              *float64   `json:"accuracy_pct,omitempty" db:"accuracy_pct"`
 	ConsistencyPct           *float64   `json:"consistency_pct,omitempty" db:"consistency_pct"`

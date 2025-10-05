@@ -3,6 +3,13 @@ const API_BASE_URL = "/api/v1";
 const SIMULATION_API_URL = "/sim";
 const DATA_FETCHER_URL = "/data";
 
+// WebSocket URL - automatically detect protocol and host
+const getWebSocketUrl = (): string => {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const host = window.location.host;
+  return `${protocol}//${host}/sim`;
+};
+
 // Types for API responses
 export interface ApiResponse<T> {
   success: boolean;
@@ -90,11 +97,65 @@ export interface SimulationResult {
   };
 }
 
-// Utility function for making HTTP requests
+// Cache implementation for API responses
+interface CacheEntry<T> {
+  data: T;
+  timestamp: number;
+  ttl: number;
+}
+
+class ApiCache {
+  private cache = new Map<string, CacheEntry<any>>();
+
+  set<T>(key: string, data: T, ttlSeconds = 300): void {
+    this.cache.set(key, {
+      data,
+      timestamp: Date.now(),
+      ttl: ttlSeconds * 1000,
+    });
+  }
+
+  get<T>(key: string): T | null {
+    const entry = this.cache.get(key);
+    if (!entry) return null;
+
+    const age = Date.now() - entry.timestamp;
+    if (age > entry.ttl) {
+      this.cache.delete(key);
+      return null;
+    }
+
+    return entry.data as T;
+  }
+
+  clear(): void {
+    this.cache.clear();
+  }
+
+  delete(key: string): void {
+    this.cache.delete(key);
+  }
+}
+
+const apiCache = new ApiCache();
+
+// Utility function for making HTTP requests with caching
 async function apiRequest<T>(
   url: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  cacheTTL?: number
 ): Promise<ApiResponse<T>> {
+  // Only cache GET requests
+  const cacheKey = options.method === "GET" || !options.method ? url : null;
+
+  // Check cache for GET requests
+  if (cacheKey && cacheTTL !== undefined) {
+    const cached = apiCache.get<T>(cacheKey);
+    if (cached) {
+      return { success: true, data: cached };
+    }
+  }
+
   try {
     const response = await fetch(url, {
       headers: {
@@ -109,36 +170,47 @@ async function apiRequest<T>(
     }
 
     const data = await response.json();
+
+    // Cache successful GET responses
+    if (cacheKey && cacheTTL !== undefined) {
+      apiCache.set(cacheKey, data, cacheTTL);
+    }
+
     return { success: true, data };
   } catch (error) {
     console.error("API request failed:", error);
-    return { 
-      success: false, 
-      error: error instanceof Error ? error.message : "Unknown error" 
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error"
     };
   }
 }
 
-// API Gateway endpoints
+// API Gateway endpoints with caching
 export class ApiGateway {
   static async getHealth(): Promise<ApiResponse<{ status: string }>> {
-    return apiRequest(`${API_BASE_URL}/health`);
+    return apiRequest(`${API_BASE_URL}/health`, {}, 30); // 30s cache
   }
 
   static async getTeams(): Promise<ApiResponse<Team[]>> {
-    return apiRequest(`${API_BASE_URL}/teams`);
+    return apiRequest(`${API_BASE_URL}/teams`, {}, 600); // 10min cache - teams rarely change
   }
 
   static async getPlayers(): Promise<ApiResponse<Player[]>> {
-    return apiRequest(`${API_BASE_URL}/players`);
+    return apiRequest(`${API_BASE_URL}/players`, {}, 300); // 5min cache
   }
 
   static async getGames(): Promise<ApiResponse<Game[]>> {
-    return apiRequest(`${API_BASE_URL}/games`);
+    return apiRequest(`${API_BASE_URL}/games`, {}, 60); // 1min cache
   }
 
   static async getGamesByDate(date: string): Promise<ApiResponse<Game[]>> {
-    return apiRequest(`${API_BASE_URL}/games/date/${date}`);
+    return apiRequest(`${API_BASE_URL}/games/date/${date}`, {}, 120); // 2min cache
+  }
+
+  // Cache control methods
+  static clearCache(): void {
+    apiCache.clear();
   }
 }
 
@@ -199,9 +271,10 @@ export class SimulationWebSocket {
 
   connect(runId: string, callbacks: typeof this.callbacks) {
     this.callbacks = callbacks;
-    
+
     try {
-      this.ws = new WebSocket(`ws://localhost:8081/simulation/${runId}/ws`);
+      const wsUrl = getWebSocketUrl();
+      this.ws = new WebSocket(`${wsUrl}/simulation/${runId}/ws`);
       
       this.ws.onopen = () => {
         console.log("WebSocket connected for simulation:", runId);
@@ -354,4 +427,5 @@ export default {
   testConnections,
   isApiError,
   getErrorMessage,
+  apiCache,
 };

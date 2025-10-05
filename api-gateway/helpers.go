@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -194,7 +195,48 @@ func sanitizeStringParam(param string) string {
 	param = strings.ReplaceAll(param, "\"", "")
 	param = strings.ReplaceAll(param, ";", "")
 	param = strings.ReplaceAll(param, "--", "")
+	param = strings.ReplaceAll(param, "/*", "")
+	param = strings.ReplaceAll(param, "*/", "")
+	param = strings.ReplaceAll(param, "xp_", "")
+	param = strings.ReplaceAll(param, "sp_", "")
+	param = strings.ReplaceAll(param, "<script", "")
+	param = strings.ReplaceAll(param, "</script", "")
 	return param
+}
+
+// validateSeasonParam validates season parameter
+func validateSeasonParam(season int) error {
+	currentYear := time.Now().Year()
+	if season < 1876 || season > currentYear+1 {
+		return fmt.Errorf("invalid season: must be between 1876 and %d", currentYear+1)
+	}
+	return nil
+}
+
+// validatePageParams validates pagination parameters
+func validatePageParams(page, pageSize int) error {
+	if page < 1 {
+		return fmt.Errorf("invalid page: must be >= 1")
+	}
+	if pageSize < 1 || pageSize > 200 {
+		return fmt.Errorf("invalid page_size: must be between 1 and 200")
+	}
+	return nil
+}
+
+// validateUUIDParam validates UUID format
+func validateUUIDParam(id string) error {
+	if id == "" {
+		return fmt.Errorf("id cannot be empty")
+	}
+	// Basic UUID validation
+	if len(id) != 36 {
+		return fmt.Errorf("invalid UUID format")
+	}
+	if strings.Count(id, "-") != 4 {
+		return fmt.Errorf("invalid UUID format")
+	}
+	return nil
 }
 
 // parseIntParam safely parses integer parameter

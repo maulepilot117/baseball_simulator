@@ -34,15 +34,20 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting MLB Data Fetcher service...")
 
-    # Create database pool
+    # Create database pool with optimized settings
+    # Lower pool size to reduce "too many clients" errors
+    # Pool size calculation: min for background tasks, max for burst traffic
     app.state.db_pool = await asyncpg.create_pool(
         host=settings.db_host,
         port=settings.db_port,
         user=settings.db_user,
         password=settings.db_password,
         database=settings.db_name,
-        min_size=20,  # Increased from 5
-        max_size=50   # Increased from 20
+        min_size=5,        # Minimum connections for idle state
+        max_size=15,       # Maximum connections for peak load
+        max_queries=50000, # Recycle connection after 50k queries
+        max_inactive_connection_lifetime=300,  # Close idle connections after 5min
+        command_timeout=30 # 30s query timeout
     )
 
     # Ensure required tables exist
@@ -76,13 +81,14 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Add CORS middleware
+# Add CORS middleware with restricted headers for security
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
     allow_credentials=True,
     allow_methods=["GET", "POST"],
-    allow_headers=["*"],
+    allow_headers=["Content-Type", "Accept", "Authorization"],
+    max_age=600,  # Cache preflight requests for 10 minutes
 )
 
 

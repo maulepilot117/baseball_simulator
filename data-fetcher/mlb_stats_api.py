@@ -176,23 +176,30 @@ class MLBStatsAPI:
             dates_to_fetch.append(current_date)
             current_date += timedelta(days=1)
         
-        # Fetch games for all dates in parallel with larger batches
-        batch_size = 30  # Increased from 10
+        # Optimized batch processing with semaphore for concurrency control
+        batch_size = 50  # Increased from 30 for better throughput
+        max_concurrent = 10  # Limit concurrent requests
         total_games = 0
-        
+
+        semaphore = asyncio.Semaphore(max_concurrent)
+
+        async def fetch_with_semaphore(date):
+            async with semaphore:
+                return await self._fetch_games_for_date(date)
+
         for i in range(0, len(dates_to_fetch), batch_size):
             batch = dates_to_fetch[i:i + batch_size]
             results = await asyncio.gather(*[
-                self._fetch_games_for_date(date) for date in batch
+                fetch_with_semaphore(date) for date in batch
             ], return_exceptions=True)
-            
+
             for result in results:
                 if not isinstance(result, Exception):
                     total_games += len(result)
-            
+
             # Minimal delay between batches
             if i + batch_size < len(dates_to_fetch):
-                await asyncio.sleep(0.1)  # Reduced from 0.5
+                await asyncio.sleep(0.05)  # Reduced from 0.1
         
         logger.info(f"Fetched {total_games} games")
     
@@ -214,15 +221,21 @@ class MLBStatsAPI:
         success_count = 0
         error_count = 0
         
-        # Process in batches to avoid overwhelming the API
-        batch_size = 200
+        # Optimized batch processing with concurrency control
+        batch_size = 250  # Increased from 200
+        max_concurrent = 25  # Limit concurrent API requests
+        semaphore = asyncio.Semaphore(max_concurrent)
+
+        async def fetch_player_with_semaphore(player):
+            async with semaphore:
+                return await self._fetch_player_season_stats(player['id'], player['mlb_id'], season)
+
         for i in range(0, len(players), batch_size):
             batch = players[i:i + batch_size]
             results = await asyncio.gather(*[
-                self._fetch_player_season_stats(player['id'], player['mlb_id'], season)
-                for player in batch
+                fetch_player_with_semaphore(player) for player in batch
             ], return_exceptions=True)
-            
+
             # Count successes and failures
             for j, result in enumerate(results):
                 if isinstance(result, Exception):
@@ -231,9 +244,9 @@ class MLBStatsAPI:
                     logger.error(f"Failed to fetch stats for {player['full_name']} ({player['mlb_id']}): {result}")
                 else:
                     success_count += 1
-            
+
             logger.info(f"Processed batch {i//batch_size + 1}/{(len(players) + batch_size - 1)//batch_size}")
-            await asyncio.sleep(0.2)  # Rate limiting between batches
+            await asyncio.sleep(0.1)  # Reduced from 0.2
         
         logger.info(f"Stats fetch complete: {success_count} successful, {error_count} errors")
     

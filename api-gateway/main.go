@@ -4,25 +4,232 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/cors"
 )
+
+// StructuredLogger implements JSON structured logging
+type StructuredLogger struct {
+	logger *log.Logger
+}
+
+type LogEntry struct {
+	Timestamp string                 `json:"timestamp"`
+	Level     string                 `json:"level"`
+	Message   string                 `json:"message"`
+	Fields    map[string]interface{} `json:"fields,omitempty"`
+}
+
+func NewStructuredLogger(out io.Writer) *StructuredLogger {
+	return &StructuredLogger{
+		logger: log.New(out, "", 0),
+	}
+}
+
+func (sl *StructuredLogger) log(level, message string, fields map[string]interface{}) {
+	entry := LogEntry{
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Level:     level,
+		Message:   message,
+		Fields:    fields,
+	}
+
+	jsonBytes, err := json.Marshal(entry)
+	if err != nil {
+		log.Printf("Failed to marshal log entry: %v", err)
+		return
+	}
+
+	sl.logger.Println(string(jsonBytes))
+}
+
+func (sl *StructuredLogger) Info(message string, fields map[string]interface{}) {
+	sl.log("INFO", message, fields)
+}
+
+func (sl *StructuredLogger) Error(message string, fields map[string]interface{}) {
+	sl.log("ERROR", message, fields)
+}
+
+func (sl *StructuredLogger) Warn(message string, fields map[string]interface{}) {
+	sl.log("WARN", message, fields)
+}
+
+var appLogger *StructuredLogger
 
 type Server struct {
 	db         *pgxpool.Pool
 	router     *mux.Router
 	httpServer *http.Server
 	config     *Config
+	rateLimiter *RateLimiter
+	queryCache *QueryCache
+}
+
+// QueryCache implements in-memory caching for database query results
+type QueryCache struct {
+	cache map[string]*CacheEntry
+	mu    sync.RWMutex
+}
+
+type CacheEntry struct {
+	data      interface{}
+	timestamp time.Time
+	ttl       time.Duration
+}
+
+func NewQueryCache() *QueryCache {
+	qc := &QueryCache{
+		cache: make(map[string]*CacheEntry),
+	}
+	// Start background cleanup goroutine
+	go qc.cleanupExpired()
+	return qc
+}
+
+func (qc *QueryCache) Get(key string) (interface{}, bool) {
+	qc.mu.RLock()
+	defer qc.mu.RUnlock()
+
+	entry, exists := qc.cache[key]
+	if !exists {
+		return nil, false
+	}
+
+	// Check if expired
+	if time.Since(entry.timestamp) > entry.ttl {
+		return nil, false
+	}
+
+	return entry.data, true
+}
+
+func (qc *QueryCache) Set(key string, data interface{}, ttl time.Duration) {
+	qc.mu.Lock()
+	defer qc.mu.Unlock()
+
+	qc.cache[key] = &CacheEntry{
+		data:      data,
+		timestamp: time.Now(),
+		ttl:       ttl,
+	}
+}
+
+func (qc *QueryCache) Delete(key string) {
+	qc.mu.Lock()
+	defer qc.mu.Unlock()
+	delete(qc.cache, key)
+}
+
+func (qc *QueryCache) Clear() {
+	qc.mu.Lock()
+	defer qc.mu.Unlock()
+	qc.cache = make(map[string]*CacheEntry)
+}
+
+func (qc *QueryCache) cleanupExpired() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		qc.mu.Lock()
+		now := time.Now()
+		for key, entry := range qc.cache {
+			if now.Sub(entry.timestamp) > entry.ttl {
+				delete(qc.cache, key)
+			}
+		}
+		qc.mu.Unlock()
+	}
+}
+
+// RateLimiter implements a simple token bucket rate limiter
+type RateLimiter struct {
+	visitors map[string]*Visitor
+	mu       sync.RWMutex
+	rate     int           // requests per minute
+	burst    int           // max burst size
+	cleanup  time.Duration // cleanup interval
+}
+
+type Visitor struct {
+	lastSeen time.Time
+	tokens   int
+	mu       sync.Mutex
+}
+
+func NewRateLimiter(rate, burst int) *RateLimiter {
+	rl := &RateLimiter{
+		visitors: make(map[string]*Visitor),
+		rate:     rate,
+		burst:    burst,
+		cleanup:  time.Minute * 5,
+	}
+	go rl.cleanupVisitors()
+	return rl
+}
+
+func (rl *RateLimiter) Allow(ip string) bool {
+	rl.mu.Lock()
+	v, exists := rl.visitors[ip]
+	if !exists {
+		v = &Visitor{
+			lastSeen: time.Now(),
+			tokens:   rl.burst,
+		}
+		rl.visitors[ip] = v
+	}
+	rl.mu.Unlock()
+
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	// Refill tokens based on time passed
+	now := time.Now()
+	elapsed := now.Sub(v.lastSeen)
+	v.lastSeen = now
+
+	tokensToAdd := int(elapsed.Minutes() * float64(rl.rate))
+	v.tokens = min(v.tokens+tokensToAdd, rl.burst)
+
+	if v.tokens > 0 {
+		v.tokens--
+		return true
+	}
+	return false
+}
+
+func (rl *RateLimiter) cleanupVisitors() {
+	for {
+		time.Sleep(rl.cleanup)
+		rl.mu.Lock()
+		for ip, v := range rl.visitors {
+			if time.Since(v.lastSeen) > rl.cleanup {
+				delete(rl.visitors, ip)
+			}
+		}
+		rl.mu.Unlock()
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 type Config struct {
@@ -59,11 +266,13 @@ func NewServer(config *Config) (*Server, error) {
 		return nil, fmt.Errorf("failed to parse db config: %w", err)
 	}
 
-	// Connection pool settings
-	dbConfig.MaxConns = 25
-	dbConfig.MinConns = 5
-	dbConfig.MaxConnLifetime = time.Hour
-	dbConfig.MaxConnIdleTime = time.Minute * 30
+	// Optimized connection pool settings
+	dbConfig.MaxConns = 20                            // Reduced from 25 to prevent pool exhaustion
+	dbConfig.MinConns = 3                             // Reduced from 5 for lower idle footprint
+	dbConfig.MaxConnLifetime = time.Minute * 30       // Reduced from 1h for faster connection refresh
+	dbConfig.MaxConnIdleTime = time.Minute * 10       // Reduced from 30min to close idle connections faster
+	dbConfig.HealthCheckPeriod = time.Minute          // Check connection health every minute
+	dbConfig.ConnConfig.ConnectTimeout = time.Second * 10 // 10s connection timeout
 
 	db, err := pgxpool.NewWithConfig(context.Background(), dbConfig)
 	if err != nil {
@@ -76,9 +285,11 @@ func NewServer(config *Config) (*Server, error) {
 	}
 
 	s := &Server{
-		db:     db,
-		config: config,
-		router: mux.NewRouter(),
+		db:          db,
+		config:      config,
+		router:      mux.NewRouter(),
+		rateLimiter: NewRateLimiter(100, 200), // 100 requests/min, burst of 200
+		queryCache:  NewQueryCache(),
 	}
 
 	s.setupRoutes()
@@ -92,8 +303,9 @@ func (s *Server) setupRoutes() {
 	// API version prefix
 	api := s.router.PathPrefix("/api/v1").Subrouter()
 
-	// Health check
+	// Health check and metrics
 	api.HandleFunc("/health", s.healthHandler).Methods("GET")
+	api.HandleFunc("/metrics", s.handleMetrics).Methods("GET")
 
 	// Teams endpoints
 	api.HandleFunc("/teams", s.getTeamsHandler).Methods("GET")
@@ -107,6 +319,7 @@ func (s *Server) setupRoutes() {
 	// Umpires endpoints
 	api.HandleFunc("/umpires", s.getUmpiresHandler).Methods("GET")
 	api.HandleFunc("/umpires/{id}", s.getUmpireHandler).Methods("GET")
+	api.HandleFunc("/umpires/{id}/stats", s.getUmpireStatsHandler).Methods("GET")
 
 	// Games endpoints
 	api.HandleFunc("/games", s.getGamesHandler).Methods("GET")
@@ -125,28 +338,35 @@ func (s *Server) setupRoutes() {
 	// API status endpoint
 	api.HandleFunc("/status", s.apiStatusHandler).Methods("GET")
 
-	// Apply middleware
+	// Apply middleware (order matters)
+	s.router.Use(s.rateLimitMiddleware)
 	s.router.Use(s.loggingMiddleware)
 	s.router.Use(s.recoveryMiddleware)
 }
 
 func (s *Server) Start() error {
-	// Setup CORS
+	// Setup CORS with restricted headers for security
 	c := cors.New(cors.Options{
-		AllowedOrigins: []string{"http://localhost:3000", "http://localhost:8080"},
-		AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders: []string{"*"},
-		MaxAge:         86400,
+		AllowedOrigins:   []string{"http://localhost:3000", "http://localhost:8080", "http://localhost:5173"},
+		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowedHeaders:   []string{"Content-Type", "Accept", "Authorization"},
+		ExposedHeaders:   []string{"Content-Length", "Content-Type"},
+		AllowCredentials: true,
+		MaxAge:           600, // 10 minutes
 	})
 
-	handler := c.Handler(s.router)
+	// Add security headers middleware and compression
+	handler := s.securityHeadersMiddleware(c.Handler(s.router))
+	handler = handlers.CompressHandler(handler) // Add gzip compression
 
 	s.httpServer = &http.Server{
-		Addr:         ":" + s.config.Port,
-		Handler:      handler,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:              ":" + s.config.Port,
+		Handler:           handler,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+		MaxHeaderBytes:    1 << 20, // 1 MB
 	}
 
 	log.Printf("Starting API Gateway on port %s", s.config.Port)
@@ -164,6 +384,36 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 // Middleware
+func (s *Server) securityHeadersMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Security headers
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("X-XSS-Protection", "1; mode=block")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'")
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) rateLimitMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Extract IP address
+		ip := r.RemoteAddr
+		if forwardedFor := r.Header.Get("X-Forwarded-For"); forwardedFor != "" {
+			ip = strings.Split(forwardedFor, ",")[0]
+		}
+
+		if !s.rateLimiter.Allow(ip) {
+			http.Error(w, "Rate limit exceeded. Please try again later.", http.StatusTooManyRequests)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -174,7 +424,23 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(lrw, r)
 
 		duration := time.Since(start)
-		log.Printf("%s %s %d %v", r.Method, r.RequestURI, lrw.statusCode, duration)
+
+		// Track metrics
+		appMetrics.IncrementRequests()
+		appMetrics.AddResponseTime(duration)
+		if lrw.statusCode >= 400 {
+			appMetrics.IncrementErrors()
+		}
+
+		// Structured JSON logging
+		appLogger.Info("HTTP Request", map[string]interface{}{
+			"method":      r.Method,
+			"path":        r.RequestURI,
+			"status":      lrw.statusCode,
+			"duration_ms": duration.Milliseconds(),
+			"remote_addr": r.RemoteAddr,
+			"user_agent":  r.UserAgent(),
+		})
 	})
 }
 
@@ -512,14 +778,19 @@ func (s *Server) getPlayerStatsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	query := `
-		SELECT player_id, season, stats_type, aggregated_stats, games_played, updated_at
+		SELECT player_id, season, stats_type, aggregated_stats, games_played, last_updated
 		FROM player_season_aggregates
-		WHERE player_id = (SELECT id FROM players WHERE id = $1 OR player_id = $1)
+		WHERE player_id = (
+			SELECT id FROM players
+			WHERE id::text = $1 OR player_id = $1
+			LIMIT 1
+		)
 		AND season = $2
 		ORDER BY stats_type`
 
 	rows, err := s.db.Query(ctx, query, playerID, season)
 	if err != nil {
+		log.Printf("Failed to query player stats: %v (playerID=%s, season=%d)", err, playerID, season)
 		writeError(w, "Failed to query player stats", http.StatusInternalServerError)
 		return
 	}
@@ -535,6 +806,7 @@ func (s *Server) getPlayerStatsHandler(w http.ResponseWriter, r *http.Request) {
 			&aggregatedStatsJSON, &stat.GamesPlayed, &stat.UpdatedAt,
 		)
 		if err != nil {
+			log.Printf("Failed to scan player stats: %v", err)
 			writeError(w, "Failed to scan player stats", http.StatusInternalServerError)
 			return
 		}
@@ -571,13 +843,9 @@ func (s *Server) getUmpiresHandler(w http.ResponseWriter, r *http.Request) {
 
 	params := parseQueryParams(r)
 
-	// Build base query
+	// Build base query - umpires table only has basic info
 	baseQuery := `
-		SELECT id, umpire_id, name, games_umped, accuracy_pct, consistency_pct,
-		       favor_home, expected_accuracy, expected_consistency,
-		       correct_calls, incorrect_calls, total_calls,
-		       strike_pct, ball_pct, k_pct_above_avg, bb_pct_above_avg,
-		       home_plate_calls_per_game, created_at, updated_at
+		SELECT id, umpire_id, name, tendencies, created_at
 		FROM umpires`
 
 	// Count query for pagination
@@ -595,9 +863,7 @@ func (s *Server) getUmpiresHandler(w http.ResponseWriter, r *http.Request) {
 	orderClause := " ORDER BY name ASC"
 	if params.Sort != "" {
 		allowedSorts := map[string]bool{
-			"name":         true,
-			"games_umped":  true,
-			"accuracy_pct": true,
+			"name": true,
 		}
 		if allowedSorts[params.Sort] {
 			orderClause = fmt.Sprintf(" ORDER BY %s %s", params.Sort, strings.ToUpper(params.Order))
@@ -619,19 +885,23 @@ func (s *Server) getUmpiresHandler(w http.ResponseWriter, r *http.Request) {
 	var umpires []Umpire
 	for rows.Next() {
 		var umpire Umpire
+		var tendenciesJSON []byte
 		err := rows.Scan(
-			&umpire.ID, &umpire.UmpireID, &umpire.Name, &umpire.GamesUmped,
-			&umpire.AccuracyPct, &umpire.ConsistencyPct, &umpire.FavorHome,
-			&umpire.ExpectedAccuracy, &umpire.ExpectedConsistency,
-			&umpire.CorrectCalls, &umpire.IncorrectCalls, &umpire.TotalCalls,
-			&umpire.StrikePct, &umpire.BallPct, &umpire.KPctAboveAvg,
-			&umpire.BBPctAboveAvg, &umpire.HomePlateCallsPerGame,
-			&umpire.CreatedAt, &umpire.UpdatedAt,
+			&umpire.ID, &umpire.UmpireID, &umpire.Name, &tendenciesJSON, &umpire.CreatedAt,
 		)
 		if err != nil {
 			writeError(w, "Failed to scan umpire", http.StatusInternalServerError)
 			return
 		}
+
+		// Parse tendencies JSON if present
+		if len(tendenciesJSON) > 0 {
+			if err := json.Unmarshal(tendenciesJSON, &umpire.Tendencies); err != nil {
+				log.Printf("Failed to parse tendencies: %v", err)
+				umpire.Tendencies = make(map[string]interface{})
+			}
+		}
+
 		umpires = append(umpires, umpire)
 	}
 
@@ -652,23 +922,14 @@ func (s *Server) getUmpireHandler(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	query := `
-		SELECT id, umpire_id, name, games_umped, accuracy_pct, consistency_pct,
-		       favor_home, expected_accuracy, expected_consistency,
-		       correct_calls, incorrect_calls, total_calls,
-		       strike_pct, ball_pct, k_pct_above_avg, bb_pct_above_avg,
-		       home_plate_calls_per_game, created_at, updated_at
+		SELECT id, umpire_id, name, tendencies, created_at
 		FROM umpires
 		WHERE umpire_id = $1 OR (id::text = $1 AND $1 ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')`
 
 	var umpire Umpire
+	var tendenciesJSON []byte
 	err := s.db.QueryRow(ctx, query, umpireID).Scan(
-		&umpire.ID, &umpire.UmpireID, &umpire.Name, &umpire.GamesUmped,
-		&umpire.AccuracyPct, &umpire.ConsistencyPct, &umpire.FavorHome,
-		&umpire.ExpectedAccuracy, &umpire.ExpectedConsistency,
-		&umpire.CorrectCalls, &umpire.IncorrectCalls, &umpire.TotalCalls,
-		&umpire.StrikePct, &umpire.BallPct, &umpire.KPctAboveAvg,
-		&umpire.BBPctAboveAvg, &umpire.HomePlateCallsPerGame,
-		&umpire.CreatedAt, &umpire.UpdatedAt,
+		&umpire.ID, &umpire.UmpireID, &umpire.Name, &tendenciesJSON, &umpire.CreatedAt,
 	)
 	if err != nil {
 		if err.Error() == "no rows in result set" {
@@ -679,7 +940,72 @@ func (s *Server) getUmpireHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Parse tendencies JSON if present
+	if len(tendenciesJSON) > 0 {
+		if err := json.Unmarshal(tendenciesJSON, &umpire.Tendencies); err != nil {
+			log.Printf("Failed to parse tendencies: %v", err)
+			umpire.Tendencies = make(map[string]interface{})
+		}
+	}
+
 	writeJSON(w, umpire)
+}
+
+func (s *Server) getUmpireStatsHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	umpireID := vars["id"]
+
+	if umpireID == "" {
+		writeError(w, "Umpire ID is required", http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := contextWithTimeout(r.Context())
+	defer cancel()
+
+	// Get season parameter, default to current season
+	season := getCurrentSeason()
+	if seasonStr := r.URL.Query().Get("season"); seasonStr != "" {
+		if parsedSeason, err := strconv.Atoi(seasonStr); err == nil {
+			season = parsedSeason
+		}
+	}
+
+	query := `
+		SELECT uss.season, uss.games_umped, uss.accuracy_pct, uss.consistency_pct,
+		       uss.favor_home, uss.expected_accuracy, uss.expected_consistency,
+		       uss.correct_calls, uss.incorrect_calls, uss.total_calls,
+		       uss.strike_pct, uss.ball_pct, uss.k_pct_above_avg, uss.bb_pct_above_avg,
+		       uss.home_plate_calls_per_game, uss.created_at, uss.updated_at
+		FROM umpire_season_stats uss
+		JOIN umpires u ON uss.umpire_id = u.id
+		WHERE (u.id::text = $1 OR u.umpire_id = $1)
+		  AND uss.season = $2`
+
+	var stats UmpireSeasonStats
+	err := s.db.QueryRow(ctx, query, umpireID, season).Scan(
+		&stats.Season, &stats.GamesUmped, &stats.AccuracyPct, &stats.ConsistencyPct,
+		&stats.FavorHome, &stats.ExpectedAccuracy, &stats.ExpectedConsistency,
+		&stats.CorrectCalls, &stats.IncorrectCalls, &stats.TotalCalls,
+		&stats.StrikePct, &stats.BallPct, &stats.KPctAboveAvg,
+		&stats.BBPctAboveAvg, &stats.HomePlateCallsPerGame,
+		&stats.CreatedAt, &stats.UpdatedAt,
+	)
+	if err != nil {
+		if err.Error() == "no rows in result set" {
+			writeError(w, "No stats found for umpire in specified season", http.StatusNotFound)
+			return
+		}
+		log.Printf("Failed to query umpire stats: %v", err)
+		writeError(w, "Failed to query umpire stats", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, map[string]interface{}{
+		"umpire_id": umpireID,
+		"season":    season,
+		"stats":     stats,
+	})
 }
 
 // Games handlers
@@ -1195,11 +1521,15 @@ func getEnv(key, defaultValue string) string {
 }
 
 func main() {
+	// Initialize structured logger
+	appLogger = NewStructuredLogger(os.Stdout)
+
 	config := NewConfig()
 
 	server, err := NewServer(config)
 	if err != nil {
-		log.Fatal("Failed to create server:", err)
+		appLogger.Error("Failed to create server", map[string]interface{}{"error": err.Error()})
+		os.Exit(1)
 	}
 
 	// Graceful shutdown
