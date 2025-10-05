@@ -151,14 +151,17 @@ services:
           memory: 256M
           cpus: '0.25'
 
-  # Frontend Service (Simple Static HTML)
+  # Frontend Service (Fresh/Deno)
   frontend:
     build:
-      context: ./frontend
-      dockerfile: Dockerfile.simple
+      context: ./frontend-fresh
+      dockerfile: Dockerfile
     container_name: baseball-frontend
+    environment:
+      - API_BASE_URL=http://api-gateway:8080/api/v1
+      - DATA_FETCHER_URL=http://data-fetcher:8082
     ports:
-      - "${FRONTEND_PORT:-3000}:80"
+      - "${FRONTEND_PORT:-3000}:8000"
     networks:
       - baseball-network
     depends_on:
@@ -167,11 +170,11 @@ services:
     deploy:
       resources:
         limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
           memory: 256M
           cpus: '0.25'
-        reservations:
-          memory: 128M
-          cpus: '0.1'
 
   # Redis for caching and session management
   redis:

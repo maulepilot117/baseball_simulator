@@ -9,6 +9,7 @@ type Team struct {
 	ID           string    `json:"id" db:"id"`
 	TeamID       string    `json:"team_id" db:"team_id"`
 	Name         string    `json:"name" db:"name"`
+	City         *string    `json:"city,omitempty" db:"city"`
 	Abbreviation string    `json:"abbreviation" db:"abbreviation"`
 	League       string    `json:"league" db:"league"`
 	Division     string    `json:"division" db:"division"`

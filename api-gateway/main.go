@@ -517,8 +517,8 @@ func (s *Server) getTeamsHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Build base query
 	baseQuery := `
-		SELECT t.id, t.team_id, t.name, t.abbreviation, t.league, 
-		       t.division, t.stadium_id, t.created_at, t.updated_at
+		SELECT t.id, t.team_id, t.name, t.city, t.abbreviation, t.league,
+		       t.division, t.stadium_id::text, t.created_at, t.updated_at
 		FROM teams t`
 
 	// Count query for pagination
@@ -553,10 +553,11 @@ func (s *Server) getTeamsHandler(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var team Team
 		err := rows.Scan(
-			&team.ID, &team.TeamID, &team.Name, &team.Abbreviation,
+			&team.ID, &team.TeamID, &team.Name, &team.City, &team.Abbreviation,
 			&team.League, &team.Division, &team.Stadium, &team.CreatedAt, &team.UpdatedAt,
 		)
 		if err != nil {
+			log.Printf("Team scan error: %v", err)
 			writeError(w, "Failed to scan team", http.StatusInternalServerError)
 			return
 		}
@@ -580,14 +581,14 @@ func (s *Server) getTeamHandler(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	query := `
-		SELECT t.id, t.team_id, t.name, t.abbreviation, t.league, 
-		       t.division, t.stadium_id, t.created_at, t.updated_at
+		SELECT t.id, t.team_id, t.name, t.city, t.abbreviation, t.league,
+		       t.division, t.stadium_id::text, t.created_at, t.updated_at
 		FROM teams t
-		WHERE t.id = $1 OR t.team_id = $1`
+		WHERE t.id::text = $1 OR t.team_id = $1`
 
 	var team Team
 	err := s.db.QueryRow(ctx, query, teamID).Scan(
-		&team.ID, &team.TeamID, &team.Name, &team.Abbreviation,
+		&team.ID, &team.TeamID, &team.Name, &team.City, &team.Abbreviation,
 		&team.League, &team.Division, &team.Stadium, &team.CreatedAt, &team.UpdatedAt,
 	)
 
@@ -595,6 +596,7 @@ func (s *Server) getTeamHandler(w http.ResponseWriter, r *http.Request) {
 		if err.Error() == "no rows in result set" {
 			writeError(w, "Team not found", http.StatusNotFound)
 		} else {
+			log.Printf("Team query error: %v", err)
 			writeError(w, "Failed to query team", http.StatusInternalServerError)
 		}
 		return
@@ -612,9 +614,9 @@ func (s *Server) getPlayersHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Build base query with team information
 	baseQuery := `
-		SELECT p.id, p.player_id, p.first_name, p.last_name, 
+		SELECT p.id::text, p.player_id, p.first_name, p.last_name,
 		       COALESCE(p.full_name, CONCAT(p.first_name, ' ', p.last_name)) as full_name,
-		       p.position, p.team_id, p.jersey_number, p.height, p.weight,
+		       p.position, p.team_id::text, p.jersey_number, p.height, p.weight,
 		       p.birth_date, p.birth_city, p.birth_country, p.bats, p.throws,
 		       p.debut_date, p.status, p.created_at, p.updated_at,
 		       t.name as team_name, t.city as team_city, t.abbreviation as team_abbreviation
@@ -623,8 +625,8 @@ func (s *Server) getPlayersHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Count query
 	countQuery := `
-		SELECT COUNT(*) 
-		FROM players p 
+		SELECT COUNT(*)
+		FROM players p
 		LEFT JOIN teams t ON p.team_id = t.id`
 
 	// Build WHERE clause
@@ -706,16 +708,16 @@ func (s *Server) getPlayerHandler(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	query := `
-		SELECT p.id, p.player_id, p.first_name, p.last_name, 
+		SELECT p.id::text, p.player_id, p.first_name, p.last_name,
 		       COALESCE(p.full_name, CONCAT(p.first_name, ' ', p.last_name)) as full_name,
-		       p.position, p.team_id, p.jersey_number, p.height, p.weight,
+		       p.position, p.team_id::text, p.jersey_number, p.height, p.weight,
 		       p.birth_date, p.birth_city, p.birth_country, p.bats, p.throws,
 		       p.debut_date, p.status, p.created_at, p.updated_at,
-		       t.id as team_internal_id, t.team_id, t.name as team_name, 
+		       t.id::text as team_internal_id, t.team_id, t.name as team_name,
 		       t.city as team_city, t.abbreviation as team_abbreviation
 		FROM players p
 		LEFT JOIN teams t ON p.team_id = t.id
-		WHERE p.id = $1 OR p.player_id = $1`
+		WHERE p.id::text = $1 OR p.player_id = $1`
 
 	var p PlayerWithTeam
 	var teamInternalID, teamID, teamName, teamCity, teamAbbr *string
