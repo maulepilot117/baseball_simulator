@@ -51,8 +51,8 @@ CREATE TABLE IF NOT EXISTS outfielder_stats (
 
     -- Speed metrics
     route_efficiency DECIMAL(4,3) DEFAULT 1.0,
-    sprint_speed DECIMAL(4,1) DEFAULT 0.0, -- seconds to home
-    max_speed_mph DECIMAL(4,1) DEFAULT 0.0,
+    sprint_speed DECIMAL(4,1) DEFAULT 0.0, -- ft/sec
+    max_speed DECIMAL(4,1) DEFAULT 0.0, -- mph
     first_step_time DECIMAL(4,3) DEFAULT 0.0, -- seconds
 
     -- Composite metrics

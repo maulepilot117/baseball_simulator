@@ -104,6 +104,10 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/players/{id}", s.getPlayerHandler).Methods("GET")
 	api.HandleFunc("/players/{id}/stats", s.getPlayerStatsHandler).Methods("GET")
 
+	// Umpires endpoints
+	api.HandleFunc("/umpires", s.getUmpiresHandler).Methods("GET")
+	api.HandleFunc("/umpires/{id}", s.getUmpireHandler).Methods("GET")
+
 	// Games endpoints
 	api.HandleFunc("/games", s.getGamesHandler).Methods("GET")
 	api.HandleFunc("/games/{id}", s.getGameHandler).Methods("GET")
@@ -560,6 +564,124 @@ func (s *Server) getPlayerStatsHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// Umpires handlers
+func (s *Server) getUmpiresHandler(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := contextWithTimeout(r.Context())
+	defer cancel()
+
+	params := parseQueryParams(r)
+
+	// Build base query
+	baseQuery := `
+		SELECT id, umpire_id, name, games_umped, accuracy_pct, consistency_pct,
+		       favor_home, expected_accuracy, expected_consistency,
+		       correct_calls, incorrect_calls, total_calls,
+		       strike_pct, ball_pct, k_pct_above_avg, bb_pct_above_avg,
+		       home_plate_calls_per_game, created_at, updated_at
+		FROM umpires`
+
+	// Count query for pagination
+	countQuery := "SELECT COUNT(*) FROM umpires"
+
+	// Get total count
+	var total int
+	err := s.db.QueryRow(ctx, countQuery).Scan(&total)
+	if err != nil {
+		writeError(w, "Failed to count umpires", http.StatusInternalServerError)
+		return
+	}
+
+	// Build ORDER and LIMIT clause
+	orderClause := " ORDER BY name ASC"
+	if params.Sort != "" {
+		allowedSorts := map[string]bool{
+			"name":         true,
+			"games_umped":  true,
+			"accuracy_pct": true,
+		}
+		if allowedSorts[params.Sort] {
+			orderClause = fmt.Sprintf(" ORDER BY %s %s", params.Sort, strings.ToUpper(params.Order))
+		}
+	}
+
+	offset := calculateOffset(params.Page, params.PageSize)
+	limitClause := fmt.Sprintf(" LIMIT %d OFFSET %d", params.PageSize, offset)
+
+	// Execute main query
+	finalQuery := baseQuery + orderClause + limitClause
+	rows, err := s.db.Query(ctx, finalQuery)
+	if err != nil {
+		writeError(w, "Failed to query umpires", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var umpires []Umpire
+	for rows.Next() {
+		var umpire Umpire
+		err := rows.Scan(
+			&umpire.ID, &umpire.UmpireID, &umpire.Name, &umpire.GamesUmped,
+			&umpire.AccuracyPct, &umpire.ConsistencyPct, &umpire.FavorHome,
+			&umpire.ExpectedAccuracy, &umpire.ExpectedConsistency,
+			&umpire.CorrectCalls, &umpire.IncorrectCalls, &umpire.TotalCalls,
+			&umpire.StrikePct, &umpire.BallPct, &umpire.KPctAboveAvg,
+			&umpire.BBPctAboveAvg, &umpire.HomePlateCallsPerGame,
+			&umpire.CreatedAt, &umpire.UpdatedAt,
+		)
+		if err != nil {
+			writeError(w, "Failed to scan umpire", http.StatusInternalServerError)
+			return
+		}
+		umpires = append(umpires, umpire)
+	}
+
+	response := buildPaginatedResponse(umpires, total, params.Page, params.PageSize)
+	writeJSON(w, response)
+}
+
+func (s *Server) getUmpireHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	umpireID := vars["id"]
+
+	if umpireID == "" {
+		writeError(w, "Umpire ID is required", http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := contextWithTimeout(r.Context())
+	defer cancel()
+
+	query := `
+		SELECT id, umpire_id, name, games_umped, accuracy_pct, consistency_pct,
+		       favor_home, expected_accuracy, expected_consistency,
+		       correct_calls, incorrect_calls, total_calls,
+		       strike_pct, ball_pct, k_pct_above_avg, bb_pct_above_avg,
+		       home_plate_calls_per_game, created_at, updated_at
+		FROM umpires
+		WHERE umpire_id = $1 OR (id::text = $1 AND $1 ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')`
+
+	var umpire Umpire
+	err := s.db.QueryRow(ctx, query, umpireID).Scan(
+		&umpire.ID, &umpire.UmpireID, &umpire.Name, &umpire.GamesUmped,
+		&umpire.AccuracyPct, &umpire.ConsistencyPct, &umpire.FavorHome,
+		&umpire.ExpectedAccuracy, &umpire.ExpectedConsistency,
+		&umpire.CorrectCalls, &umpire.IncorrectCalls, &umpire.TotalCalls,
+		&umpire.StrikePct, &umpire.BallPct, &umpire.KPctAboveAvg,
+		&umpire.BBPctAboveAvg, &umpire.HomePlateCallsPerGame,
+		&umpire.CreatedAt, &umpire.UpdatedAt,
+	)
+	if err != nil {
+		if err.Error() == "no rows in result set" {
+			writeError(w, "Umpire not found", http.StatusNotFound)
+			return
+		}
+		writeError(w, "Failed to query umpire", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, umpire)
+}
+
 // Games handlers
 func (s *Server) getGamesHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := contextWithTimeout(r.Context())
@@ -569,13 +691,12 @@ func (s *Server) getGamesHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Build base query with team information
 	baseQuery := `
-		SELECT g.id, g.game_id, g.season, g.game_type, g.game_date,
-		       g.home_team_id, g.away_team_id, g.home_score, g.away_score,
-		       g.status, g.inning, g.inning_half, g.stadium_id, g.weather_data,
-		       g.attendance, g.game_duration, g.created_at, g.updated_at,
+		SELECT g.id::text, g.game_id, g.season, COALESCE(g.game_type, ''), g.game_date,
+		       g.home_team_id::text, g.away_team_id::text, g.final_score_home, g.final_score_away,
+		       COALESCE(g.status, ''), COALESCE(g.stadium_id::text, ''), g.created_at, g.updated_at,
 		       ht.name as home_team_name, ht.city as home_team_city, ht.abbreviation as home_team_abbr,
 		       at.name as away_team_name, at.city as away_team_city, at.abbreviation as away_team_abbr,
-		       s.name as stadium_name, s.city as stadium_city
+		       s.name as stadium_name, s.location as stadium_location
 		FROM games g
 		LEFT JOIN teams ht ON g.home_team_id = ht.id
 		LEFT JOIN teams at ON g.away_team_id = at.id
@@ -618,16 +739,15 @@ func (s *Server) getGamesHandler(w http.ResponseWriter, r *http.Request) {
 		var g GameWithTeams
 		var homeTeamName, homeTeamCity, homeTeamAbbr *string
 		var awayTeamName, awayTeamCity, awayTeamAbbr *string
-		var stadiumName, stadiumCity *string
+		var stadiumName, stadiumLocation *string
 
 		err := rows.Scan(
 			&g.ID, &g.GameID, &g.Season, &g.GameType, &g.GameDate,
 			&g.HomeTeamID, &g.AwayTeamID, &g.HomeScore, &g.AwayScore,
-			&g.Status, &g.Inning, &g.InningHalf, &g.StadiumID, &g.WeatherData,
-			&g.Attendance, &g.GameDuration, &g.CreatedAt, &g.UpdatedAt,
+			&g.Status, &g.StadiumID, &g.CreatedAt, &g.UpdatedAt,
 			&homeTeamName, &homeTeamCity, &homeTeamAbbr,
 			&awayTeamName, &awayTeamCity, &awayTeamAbbr,
-			&stadiumName, &stadiumCity,
+			&stadiumName, &stadiumLocation,
 		)
 		if err != nil {
 			writeError(w, "Failed to scan game", http.StatusInternalServerError)
@@ -676,35 +796,33 @@ func (s *Server) getGameHandler(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	query := `
-		SELECT g.id, g.game_id, g.season, g.game_type, g.game_date,
-		       g.home_team_id, g.away_team_id, g.home_score, g.away_score,
-		       g.status, g.inning, g.inning_half, g.stadium_id, g.weather_data,
-		       g.attendance, g.game_duration, g.created_at, g.updated_at,
-		       ht.team_id as home_team_external_id, ht.name as home_team_name, 
+		SELECT g.id::text, g.game_id, g.season, COALESCE(g.game_type, ''), g.game_date,
+		       g.home_team_id::text, g.away_team_id::text, g.final_score_home, g.final_score_away,
+		       COALESCE(g.status, ''), COALESCE(g.stadium_id::text, ''), g.created_at, g.updated_at,
+		       ht.team_id as home_team_external_id, ht.name as home_team_name,
 		       ht.city as home_team_city, ht.abbreviation as home_team_abbr,
-		       at.team_id as away_team_external_id, at.name as away_team_name, 
+		       at.team_id as away_team_external_id, at.name as away_team_name,
 		       at.city as away_team_city, at.abbreviation as away_team_abbr,
-		       s.name as stadium_name, s.city as stadium_city, s.capacity as stadium_capacity
+		       s.name as stadium_name, s.location as stadium_location, s.capacity as stadium_capacity
 		FROM games g
 		LEFT JOIN teams ht ON g.home_team_id = ht.id
 		LEFT JOIN teams at ON g.away_team_id = at.id
 		LEFT JOIN stadiums s ON g.stadium_id = s.id
-		WHERE g.id = $1 OR g.game_id = $1`
+		WHERE g.id::text = $1 OR g.game_id = $1`
 
 	var g GameWithTeams
 	var homeTeamExternalID, homeTeamName, homeTeamCity, homeTeamAbbr *string
 	var awayTeamExternalID, awayTeamName, awayTeamCity, awayTeamAbbr *string
-	var stadiumName, stadiumCity *string
+	var stadiumName, stadiumLocation *string
 	var stadiumCapacity *int
 
 	err := s.db.QueryRow(ctx, query, gameID).Scan(
 		&g.ID, &g.GameID, &g.Season, &g.GameType, &g.GameDate,
 		&g.HomeTeamID, &g.AwayTeamID, &g.HomeScore, &g.AwayScore,
-		&g.Status, &g.Inning, &g.InningHalf, &g.StadiumID, &g.WeatherData,
-		&g.Attendance, &g.GameDuration, &g.CreatedAt, &g.UpdatedAt,
+		&g.Status, &g.StadiumID, &g.CreatedAt, &g.UpdatedAt,
 		&homeTeamExternalID, &homeTeamName, &homeTeamCity, &homeTeamAbbr,
 		&awayTeamExternalID, &awayTeamName, &awayTeamCity, &awayTeamAbbr,
-		&stadiumName, &stadiumCity, &stadiumCapacity,
+		&stadiumName, &stadiumLocation, &stadiumCapacity,
 	)
 
 	if err != nil {
@@ -760,10 +878,9 @@ func (s *Server) getGamesByDateHandler(w http.ResponseWriter, r *http.Request) {
 	nextDate := date.AddDate(0, 0, 1)
 
 	query := `
-		SELECT g.id, g.game_id, g.season, g.game_type, g.game_date,
-		       g.home_team_id, g.away_team_id, g.home_score, g.away_score,
-		       g.status, g.inning, g.inning_half, g.stadium_id, g.weather_data,
-		       g.attendance, g.game_duration, g.created_at, g.updated_at,
+		SELECT g.id::text, g.game_id, g.season, COALESCE(g.game_type, ''), g.game_date,
+		       g.home_team_id::text, g.away_team_id::text, g.final_score_home, g.final_score_away,
+		       COALESCE(g.status, ''), COALESCE(g.stadium_id::text, ''), g.created_at, g.updated_at,
 		       ht.name as home_team_name, ht.city as home_team_city, ht.abbreviation as home_team_abbr,
 		       at.name as away_team_name, at.city as away_team_city, at.abbreviation as away_team_abbr
 		FROM games g
@@ -788,8 +905,7 @@ func (s *Server) getGamesByDateHandler(w http.ResponseWriter, r *http.Request) {
 		err := rows.Scan(
 			&g.ID, &g.GameID, &g.Season, &g.GameType, &g.GameDate,
 			&g.HomeTeamID, &g.AwayTeamID, &g.HomeScore, &g.AwayScore,
-			&g.Status, &g.Inning, &g.InningHalf, &g.StadiumID, &g.WeatherData,
-			&g.Attendance, &g.GameDuration, &g.CreatedAt, &g.UpdatedAt,
+			&g.Status, &g.StadiumID, &g.CreatedAt, &g.UpdatedAt,
 			&homeTeamName, &homeTeamCity, &homeTeamAbbr,
 			&awayTeamName, &awayTeamCity, &awayTeamAbbr,
 		)

@@ -178,3 +178,26 @@ type ServiceHealth struct {
 	DataFetcher   string `json:"data_fetcher"`
 	OverallStatus string `json:"overall_status"`
 }
+
+// Umpire represents an umpire with performance metrics
+type Umpire struct {
+	ID                       string     `json:"id" db:"id"`
+	UmpireID                 string     `json:"umpire_id" db:"umpire_id"`
+	Name                     string     `json:"name" db:"name"`
+	GamesUmped               int        `json:"games_umped" db:"games_umped"`
+	AccuracyPct              *float64   `json:"accuracy_pct,omitempty" db:"accuracy_pct"`
+	ConsistencyPct           *float64   `json:"consistency_pct,omitempty" db:"consistency_pct"`
+	FavorHome                *float64   `json:"favor_home,omitempty" db:"favor_home"`
+	ExpectedAccuracy         *float64   `json:"expected_accuracy,omitempty" db:"expected_accuracy"`
+	ExpectedConsistency      *float64   `json:"expected_consistency,omitempty" db:"expected_consistency"`
+	CorrectCalls             int        `json:"correct_calls" db:"correct_calls"`
+	IncorrectCalls           int        `json:"incorrect_calls" db:"incorrect_calls"`
+	TotalCalls               int        `json:"total_calls" db:"total_calls"`
+	StrikePct                *float64   `json:"strike_pct,omitempty" db:"strike_pct"`
+	BallPct                  *float64   `json:"ball_pct,omitempty" db:"ball_pct"`
+	KPctAboveAvg             *float64   `json:"k_pct_above_avg,omitempty" db:"k_pct_above_avg"`
+	BBPctAboveAvg            *float64   `json:"bb_pct_above_avg,omitempty" db:"bb_pct_above_avg"`
+	HomePlateCallsPerGame    *float64   `json:"home_plate_calls_per_game,omitempty" db:"home_plate_calls_per_game"`
+	CreatedAt                time.Time  `json:"created_at" db:"created_at"`
+	UpdatedAt                time.Time  `json:"updated_at" db:"updated_at"`
+}
