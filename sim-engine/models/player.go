@@ -249,6 +249,13 @@ func (ps *PitchingStats) GetSplitStats(batterHand string, risp bool, highLeverag
 
 // SimulateAtBat simulates a plate appearance outcome
 func (p *Player) SimulateAtBat(pitcher *Player, gameState *GameState, weather Weather) AtBatResult {
+	return p.SimulateAtBatWithContext(pitcher, gameState, weather, nil, nil, nil)
+}
+
+// SimulateAtBatWithContext simulates a plate appearance with full context
+func (p *Player) SimulateAtBatWithContext(pitcher *Player, gameState *GameState, weather Weather,
+	umpire *UmpireTendencies, parkFactors *ParkFactors, stadium *StadiumDimensions) AtBatResult {
+
 	// Get situational stats
 	risp := gameState.Bases.Second != nil || gameState.Bases.Third != nil
 	highLeverage := gameState.CalculateLeverage() > 1.5
@@ -268,11 +275,18 @@ func (p *Player) SimulateAtBat(pitcher *Player, gameState *GameState, weather We
 	weatherAdjustment := getWeatherAdjustment(weather)
 	expectedWOBA += weatherAdjustment
 
+	// Apply umpire effects if available
+	if umpire != nil {
+		leverage := gameState.CalculateLeverage()
+		umpireAdjustment := umpire.GetStrikeZoneAdjustment(gameState.Count, leverage)
+		expectedWOBA += umpireAdjustment
+	}
+
 	// Ensure realistic bounds
 	expectedWOBA = math.Max(0.200, math.Min(0.500, expectedWOBA))
 
-	// Simulate outcome based on expected wOBA
-	return simulateOutcome(expectedWOBA, p, pitcher, gameState)
+	// Simulate outcome based on expected wOBA with park factors
+	return simulateOutcomeWithParkFactors(expectedWOBA, p, pitcher, gameState, umpire, parkFactors, stadium)
 }
 
 // AtBatResult represents the outcome of a plate appearance
@@ -335,13 +349,43 @@ func getWeatherAdjustment(weather Weather) float64 {
 }
 
 func simulateOutcome(expectedWOBA float64, batter *Player, pitcher *Player, gameState *GameState) AtBatResult {
+	return simulateOutcomeWithParkFactors(expectedWOBA, batter, pitcher, gameState, nil, nil, nil)
+}
+
+func simulateOutcomeWithParkFactors(expectedWOBA float64, batter *Player, pitcher *Player,
+	gameState *GameState, umpire *UmpireTendencies, parkFactors *ParkFactors, stadium *StadiumDimensions) AtBatResult {
+
 	// Use wOBA to determine outcome probabilities
 	// These are rough estimates based on league averages
 
 	roll := rand.Float64()
 
-	// Walk probability increases with higher wOBA
-	walkProb := batter.Batting.BBPercent / 100.0 * (1.0 + (expectedWOBA-0.320)*2.0)
+	// Base walk and strikeout probabilities
+	baseWalkProb := batter.Batting.BBPercent / 100.0 * (1.0 + (expectedWOBA-0.320)*2.0)
+	baseKProb := batter.Batting.KPercent / 100.0 * (1.0 - (expectedWOBA-0.320)*2.0)
+
+	// Apply umpire effects if available
+	if umpire != nil {
+		// Umpire affects walk and strikeout rates
+		kAdjust := umpire.GetStrikeoutAdjustment() / 100.0
+		bbAdjust := umpire.GetWalkAdjustment() / 100.0
+
+		baseKProb += kAdjust
+		baseWalkProb += bbAdjust
+
+		// Ensure probabilities stay reasonable
+		baseKProb = math.Max(0.05, math.Min(0.40, baseKProb))
+		baseWalkProb = math.Max(0.03, math.Min(0.20, baseWalkProb))
+	}
+
+	// Apply park factors to walk/strikeout if available
+	if parkFactors != nil {
+		baseWalkProb *= parkFactors.GetParkFactorMultiplier("walk", batter.Hand)
+		baseKProb *= parkFactors.GetParkFactorMultiplier("strikeout", batter.Hand)
+	}
+
+	// Walk probability
+	walkProb := baseWalkProb
 	if roll < walkProb {
 		return AtBatResult{
 			Type:        "walk",
@@ -354,8 +398,8 @@ func simulateOutcome(expectedWOBA float64, batter *Player, pitcher *Player, game
 		}
 	}
 
-	// Strikeout probability decreases with higher wOBA
-	kProb := walkProb + (batter.Batting.KPercent / 100.0 * (1.0 - (expectedWOBA-0.320)*2.0))
+	// Strikeout probability
+	kProb := walkProb + baseKProb
 	if roll < kProb {
 		return AtBatResult{
 			Type:        "strikeout",
@@ -371,8 +415,8 @@ func simulateOutcome(expectedWOBA float64, batter *Player, pitcher *Player, game
 	// Hit probability based on wOBA
 	hitProb := kProb + (expectedWOBA * 1.2) // Rough conversion
 	if roll < hitProb {
-		// Determine hit type
-		return simulateHitType(expectedWOBA, batter, pitcher)
+		// Determine hit type with park factors
+		return simulateHitTypeWithParkFactors(expectedWOBA, batter, pitcher, parkFactors, stadium)
 	}
 
 	// Otherwise it's an out
@@ -388,13 +432,36 @@ func simulateOutcome(expectedWOBA float64, batter *Player, pitcher *Player, game
 }
 
 func simulateHitType(expectedWOBA float64, batter *Player, pitcher *Player) AtBatResult {
+	return simulateHitTypeWithParkFactors(expectedWOBA, batter, pitcher, nil, nil)
+}
+
+func simulateHitTypeWithParkFactors(expectedWOBA float64, batter *Player, pitcher *Player,
+	parkFactors *ParkFactors, stadium *StadiumDimensions) AtBatResult {
+
 	roll := rand.Float64()
 
 	// Power factor influences extra base hits
 	powerFactor := float64(batter.Attributes.Power) / 50.0 // Normalize to ~1.0
 
+	// Base home run probability
+	baseHRProb := math.Min(0.15, (expectedWOBA-0.250)*0.3*powerFactor)
+
+	// Apply park factors to home runs
+	if parkFactors != nil {
+		hrMultiplier := parkFactors.GetParkFactorMultiplier("home_run", batter.Hand)
+		baseHRProb *= hrMultiplier
+	}
+
+	// Apply altitude effect if stadium info available
+	if stadium != nil && stadium.LeftField > 0 {
+		// Estimate altitude from park factors or use stored value
+		// For now, we'll use a simplified approach
+		// In practice, altitude would be passed separately
+		baseHRProb *= 1.0 // Placeholder for altitude adjustment
+	}
+
 	// Home run probability
-	hrProb := math.Min(0.15, (expectedWOBA-0.250)*0.3*powerFactor)
+	hrProb := baseHRProb
 	if roll < hrProb {
 		return AtBatResult{
 			Type:        "home_run",
@@ -406,8 +473,13 @@ func simulateHitType(expectedWOBA float64, batter *Player, pitcher *Player) AtBa
 		}
 	}
 
-	// Triple probability (rare)
-	tripleProb := hrProb + math.Min(0.03, (expectedWOBA-0.300)*0.1)
+	// Triple probability (rare) - affected by park dimensions
+	baseTripleProb := math.Min(0.03, (expectedWOBA-0.300)*0.1)
+	if parkFactors != nil {
+		baseTripleProb *= parkFactors.GetParkFactorMultiplier("triple", batter.Hand)
+	}
+
+	tripleProb := hrProb + baseTripleProb
 	if roll < tripleProb {
 		return AtBatResult{
 			Type:        "triple",
@@ -420,7 +492,12 @@ func simulateHitType(expectedWOBA float64, batter *Player, pitcher *Player) AtBa
 	}
 
 	// Double probability
-	doubleProb := tripleProb + math.Min(0.25, (expectedWOBA-0.250)*0.5*powerFactor)
+	baseDoubleProb := math.Min(0.25, (expectedWOBA-0.250)*0.5*powerFactor)
+	if parkFactors != nil {
+		baseDoubleProb *= parkFactors.GetParkFactorMultiplier("double", batter.Hand)
+	}
+
+	doubleProb := tripleProb + baseDoubleProb
 	if roll < doubleProb {
 		return AtBatResult{
 			Type:        "double",

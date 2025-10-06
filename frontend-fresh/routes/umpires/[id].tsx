@@ -58,11 +58,11 @@ export default function UmpireDetailPage({ data }: PageProps<UmpireDetailData>) 
   }
 
   // Calculate career totals
-  const careerGames = stats.reduce((sum, s) => sum + s.games_umpired, 0);
-  const careerPitches = stats.reduce((sum, s) => sum + (s.total_pitches || 0), 0);
+  const careerGames = stats.reduce((sum, s) => sum + s.games_umped, 0);
+  const careerPitches = stats.reduce((sum, s) => sum + (s.total_calls || 0), 0);
   const avgAccuracy =
     stats.length > 0
-      ? stats.reduce((sum, s) => sum + (s.accuracy || 0), 0) / stats.length
+      ? stats.reduce((sum, s) => sum + (s.accuracy_pct || 0), 0) / stats.length
       : 0;
 
   return (
@@ -84,16 +84,13 @@ export default function UmpireDetailPage({ data }: PageProps<UmpireDetailData>) 
                 <h1 class="text-4xl font-bold text-gray-900 mb-2">
                   {umpire.name}
                 </h1>
-                <div class="flex items-center gap-4 text-gray-600">
-                  <span class="font-mono text-sm bg-gray-100 px-3 py-1 rounded">
-                    ID: {umpire.umpire_id}
-                  </span>
-                  {stats.length > 0 && (
+                {stats.length > 0 && (
+                  <div class="text-gray-600">
                     <span class="text-sm">
                       {stats.length} season{stats.length !== 1 ? "s" : ""} recorded
                     </span>
-                  )}
-                </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -214,7 +211,7 @@ export default function UmpireDetailPage({ data }: PageProps<UmpireDetailData>) 
                       Favor Home
                     </th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
-                      Favor Away
+                      Consistency
                     </th>
                   </tr>
                 </thead>
@@ -227,10 +224,10 @@ export default function UmpireDetailPage({ data }: PageProps<UmpireDetailData>) 
                           {stat.season}
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                          {stat.games_umpired}
+                          {stat.games_umped}
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                          {stat.total_pitches?.toLocaleString() || "—"}
+                          {stat.total_calls?.toLocaleString() || "—"}
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                           {stat.incorrect_calls?.toLocaleString() || "—"}
@@ -238,14 +235,14 @@ export default function UmpireDetailPage({ data }: PageProps<UmpireDetailData>) 
                         <td class="px-6 py-4 whitespace-nowrap">
                           <span
                             class={`text-sm font-semibold ${
-                              (stat.accuracy || 0) >= 95
+                              (stat.accuracy_pct || 0) >= 95
                                 ? "text-green-600"
-                                : (stat.accuracy || 0) >= 90
+                                : (stat.accuracy_pct || 0) >= 90
                                 ? "text-yellow-600"
                                 : "text-red-600"
                             }`}
                           >
-                            {stat.accuracy?.toFixed(2)}%
+                            {stat.accuracy_pct?.toFixed(2)}%
                           </span>
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
@@ -267,18 +264,17 @@ export default function UmpireDetailPage({ data }: PageProps<UmpireDetailData>) 
                           )}
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                          {stat.favor_away !== undefined ? (
+                          {stat.consistency_pct !== undefined ? (
                             <span
                               class={
-                                stat.favor_away > 0
+                                (stat.consistency_pct || 0) >= 95
                                   ? "text-green-600"
-                                  : stat.favor_away < 0
-                                  ? "text-red-600"
-                                  : "text-gray-600"
+                                  : (stat.consistency_pct || 0) >= 90
+                                  ? "text-yellow-600"
+                                  : "text-red-600"
                               }
                             >
-                              {stat.favor_away > 0 ? "+" : ""}
-                              {stat.favor_away.toFixed(2)}
+                              {stat.consistency_pct.toFixed(2)}%
                             </span>
                           ) : (
                             "—"

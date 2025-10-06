@@ -59,6 +59,33 @@ export default function Home({ data }: PageProps<HomeData>) {
           <LiveSearch />
         </div>
 
+        {/* Featured: Monte Carlo Simulations */}
+        <div class="mb-8">
+          <a
+            href="/simulations"
+            class="block bg-gradient-to-r from-blue-600 to-green-600 rounded-xl shadow-lg hover:shadow-xl transition-all transform hover:scale-[1.02] p-8 text-white"
+          >
+            <div class="flex items-center justify-between">
+              <div class="flex-1">
+                <div class="flex items-center gap-3 mb-2">
+                  <span class="text-4xl">🎲</span>
+                  <h2 class="text-2xl font-bold">Monte Carlo Game Simulations</h2>
+                </div>
+                <p class="text-blue-100 mb-4">
+                  Run advanced simulations using real player stats, weather forecasts, umpire tendencies, and park factors
+                </p>
+                <div class="flex items-center gap-2 text-sm text-blue-100">
+                  <span class="bg-white/20 px-3 py-1 rounded-full">Real-time Weather</span>
+                  <span class="bg-white/20 px-3 py-1 rounded-full">Park Factors</span>
+                  <span class="bg-white/20 px-3 py-1 rounded-full">Umpire Effects</span>
+                  <span class="bg-white/20 px-3 py-1 rounded-full">1000+ Runs</span>
+                </div>
+              </div>
+              <div class="text-white/80 text-4xl">→</div>
+            </div>
+          </a>
+        </div>
+
         {/* Quick Stats */}
         <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
           <div class="bg-white rounded-lg shadow p-6">
@@ -135,7 +162,14 @@ export default function Home({ data }: PageProps<HomeData>) {
         </div>
 
         {/* Navigation Links */}
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
+          <a
+            href="/simulations"
+            class="bg-gradient-to-br from-blue-500 to-blue-600 text-white rounded-lg shadow p-6 text-center hover:shadow-lg transition transform hover:scale-105"
+          >
+            <div class="text-4xl mb-2">🎲</div>
+            <div class="font-semibold">Simulations</div>
+          </a>
           <a
             href="/teams"
             class="bg-white rounded-lg shadow p-6 text-center hover:shadow-lg transition"

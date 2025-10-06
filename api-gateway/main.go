@@ -17,6 +17,7 @@ import (
 
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/cors"
 )
@@ -307,9 +308,14 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/health", s.healthHandler).Methods("GET")
 	api.HandleFunc("/metrics", s.handleMetrics).Methods("GET")
 
+	// Search endpoint
+	api.HandleFunc("/search", s.searchHandler).Methods("GET")
+
 	// Teams endpoints
 	api.HandleFunc("/teams", s.getTeamsHandler).Methods("GET")
 	api.HandleFunc("/teams/{id}", s.getTeamHandler).Methods("GET")
+	api.HandleFunc("/teams/{id}/stats", s.getTeamStatsHandler).Methods("GET")
+	api.HandleFunc("/teams/{id}/games", s.getTeamGamesHandler).Methods("GET")
 
 	// Players endpoints
 	api.HandleFunc("/players", s.getPlayersHandler).Methods("GET")
@@ -325,6 +331,9 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/games", s.getGamesHandler).Methods("GET")
 	api.HandleFunc("/games/{id}", s.getGameHandler).Methods("GET")
 	api.HandleFunc("/games/date/{date}", s.getGamesByDateHandler).Methods("GET")
+	api.HandleFunc("/games/{id}/boxscore", s.getGameBoxScore).Methods("GET")
+	api.HandleFunc("/games/{id}/plays", s.getGamePlays).Methods("GET")
+	api.HandleFunc("/games/{id}/weather", s.getGameWeather).Methods("GET")
 
 	// Simulation endpoints
 	api.HandleFunc("/simulations", s.createSimulationHandler).Methods("POST")
@@ -508,6 +517,332 @@ func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, health)
 }
 
+// searchHandler performs a comprehensive search across all entity types
+func (s *Server) searchHandler(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query().Get("q")
+
+	// Validate query
+	if query == "" {
+		writeError(w, "Search query 'q' parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	if len(query) < 2 {
+		writeError(w, "Search query must be at least 2 characters", http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := contextWithTimeout(r.Context())
+	defer cancel()
+
+	// Use channels to collect results from parallel searches
+	type searchResults struct {
+		results []SearchResult
+		err     error
+	}
+
+	playersChan := make(chan searchResults, 1)
+	teamsChan := make(chan searchResults, 1)
+	gamesChan := make(chan searchResults, 1)
+	umpiresChan := make(chan searchResults, 1)
+
+	searchPattern := "%" + query + "%"
+
+	// Search players in parallel
+	go func() {
+		results, err := s.searchPlayers(ctx, searchPattern)
+		playersChan <- searchResults{results: results, err: err}
+	}()
+
+	// Search teams in parallel
+	go func() {
+		results, err := s.searchTeams(ctx, searchPattern)
+		teamsChan <- searchResults{results: results, err: err}
+	}()
+
+	// Search games in parallel
+	go func() {
+		results, err := s.searchGames(ctx, searchPattern)
+		gamesChan <- searchResults{results: results, err: err}
+	}()
+
+	// Search umpires in parallel
+	go func() {
+		results, err := s.searchUmpires(ctx, searchPattern)
+		umpiresChan <- searchResults{results: results, err: err}
+	}()
+
+	// Collect all results
+	var allResults []SearchResult
+
+	playersRes := <-playersChan
+	if playersRes.err != nil {
+		appLogger.Error("Failed to search players", map[string]interface{}{"error": playersRes.err.Error()})
+	} else {
+		allResults = append(allResults, playersRes.results...)
+	}
+
+	teamsRes := <-teamsChan
+	if teamsRes.err != nil {
+		appLogger.Error("Failed to search teams", map[string]interface{}{"error": teamsRes.err.Error()})
+	} else {
+		allResults = append(allResults, teamsRes.results...)
+	}
+
+	gamesRes := <-gamesChan
+	if gamesRes.err != nil {
+		appLogger.Error("Failed to search games", map[string]interface{}{"error": gamesRes.err.Error()})
+	} else {
+		allResults = append(allResults, gamesRes.results...)
+	}
+
+	umpiresRes := <-umpiresChan
+	if umpiresRes.err != nil {
+		appLogger.Error("Failed to search umpires", map[string]interface{}{"error": umpiresRes.err.Error()})
+	} else {
+		allResults = append(allResults, umpiresRes.results...)
+	}
+
+	// Sort by relevance (higher relevance first)
+	for i := 0; i < len(allResults); i++ {
+		for j := i + 1; j < len(allResults); j++ {
+			if allResults[j].Relevance > allResults[i].Relevance {
+				allResults[i], allResults[j] = allResults[j], allResults[i]
+			}
+		}
+	}
+
+	// Limit to top 50 results
+	if len(allResults) > 50 {
+		allResults = allResults[:50]
+	}
+
+	writeJSON(w, allResults)
+}
+
+// searchPlayers searches for players by name
+func (s *Server) searchPlayers(ctx context.Context, pattern string) ([]SearchResult, error) {
+	query := `
+		SELECT p.id::text, p.full_name, p.position, t.name as team_name, t.city as team_city,
+		       CASE
+		           WHEN LOWER(p.full_name) = LOWER(TRIM('%' FROM $1)) THEN 100
+		           WHEN LOWER(p.full_name) LIKE LOWER($1) THEN 80
+		           WHEN LOWER(p.last_name) LIKE LOWER($1) THEN 70
+		           ELSE 50
+		       END as relevance
+		FROM players p
+		LEFT JOIN teams t ON p.team_id = t.id
+		WHERE p.full_name ILIKE $1
+		   OR p.first_name ILIKE $1
+		   OR p.last_name ILIKE $1
+		ORDER BY relevance DESC
+		LIMIT 25`
+
+	rows, err := s.db.Query(ctx, query, pattern)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []SearchResult
+	for rows.Next() {
+		var id, fullName, position string
+		var teamName, teamCity *string
+		var relevance int
+
+		if err := rows.Scan(&id, &fullName, &position, &teamName, &teamCity, &relevance); err != nil {
+			continue
+		}
+
+		description := position
+		if teamName != nil {
+			// Check if name already contains city to avoid duplication
+			teamDisplayName := *teamName
+			if teamCity != nil && !strings.Contains(*teamName, *teamCity) {
+				teamDisplayName = *teamCity + " " + *teamName
+			}
+			description += " - " + teamDisplayName
+		}
+
+		results = append(results, SearchResult{
+			Type:        "player",
+			ID:          id,
+			Name:        fullName,
+			Description: description,
+			Relevance:   relevance,
+		})
+	}
+
+	return results, nil
+}
+
+// searchTeams searches for teams by name, city, or abbreviation
+func (s *Server) searchTeams(ctx context.Context, pattern string) ([]SearchResult, error) {
+	query := `
+		SELECT id::text, name, city, abbreviation,
+		       CASE
+		           WHEN LOWER(name) LIKE LOWER($1) THEN 90
+		           WHEN LOWER(city) LIKE LOWER($1) THEN 85
+		           WHEN LOWER(abbreviation) LIKE LOWER($1) THEN 95
+		           ELSE 50
+		       END as relevance
+		FROM teams
+		WHERE name ILIKE $1
+		   OR city ILIKE $1
+		   OR abbreviation ILIKE $1
+		ORDER BY relevance DESC
+		LIMIT 10`
+
+	rows, err := s.db.Query(ctx, query, pattern)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []SearchResult
+	for rows.Next() {
+		var id, name string
+		var city, abbreviation *string
+		var relevance int
+
+		if err := rows.Scan(&id, &name, &city, &abbreviation, &relevance); err != nil {
+			continue
+		}
+
+		displayName := name
+		if city != nil && !strings.Contains(name, *city) {
+			displayName = *city + " " + name
+		}
+
+		description := ""
+		if abbreviation != nil {
+			description = *abbreviation
+		}
+
+		results = append(results, SearchResult{
+			Type:        "team",
+			ID:          id,
+			Name:        displayName,
+			Description: description,
+			Relevance:   relevance,
+		})
+	}
+
+	return results, nil
+}
+
+// searchGames searches for games by team names or date
+func (s *Server) searchGames(ctx context.Context, pattern string) ([]SearchResult, error) {
+	query := `
+		SELECT g.id::text, g.game_date,
+		       ht.name as home_team_name, ht.city as home_team_city,
+		       at.name as away_team_name, at.city as away_team_city,
+		       g.status,
+		       CASE
+		           WHEN ht.name ILIKE $1 OR at.name ILIKE $1 THEN 70
+		           WHEN ht.city ILIKE $1 OR at.city ILIKE $1 THEN 65
+		           ELSE 40
+		       END as relevance
+		FROM games g
+		LEFT JOIN teams ht ON g.home_team_id = ht.id
+		LEFT JOIN teams at ON g.away_team_id = at.id
+		WHERE ht.name ILIKE $1
+		   OR at.name ILIKE $1
+		   OR ht.city ILIKE $1
+		   OR at.city ILIKE $1
+		ORDER BY g.game_date DESC, relevance DESC
+		LIMIT 10`
+
+	rows, err := s.db.Query(ctx, query, pattern)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []SearchResult
+	for rows.Next() {
+		var id string
+		var gameDate time.Time
+		var homeTeamName, homeTeamCity, awayTeamName, awayTeamCity *string
+		var status string
+		var relevance int
+
+		if err := rows.Scan(&id, &gameDate, &homeTeamName, &homeTeamCity, &awayTeamName, &awayTeamCity, &status, &relevance); err != nil {
+			continue
+		}
+
+		awayDisplay := ""
+		if awayTeamName != nil {
+			awayDisplay = *awayTeamName
+			if awayTeamCity != nil && !strings.Contains(*awayTeamName, *awayTeamCity) {
+				awayDisplay = *awayTeamCity + " " + *awayTeamName
+			}
+		}
+
+		homeDisplay := ""
+		if homeTeamName != nil {
+			homeDisplay = *homeTeamName
+			if homeTeamCity != nil && !strings.Contains(*homeTeamName, *homeTeamCity) {
+				homeDisplay = *homeTeamCity + " " + *homeTeamName
+			}
+		}
+
+		name := awayDisplay + " @ " + homeDisplay
+		description := gameDate.Format("2006-01-02") + " - " + status
+
+		results = append(results, SearchResult{
+			Type:        "game",
+			ID:          id,
+			Name:        name,
+			Description: description,
+			Relevance:   relevance,
+		})
+	}
+
+	return results, nil
+}
+
+// searchUmpires searches for umpires by name
+func (s *Server) searchUmpires(ctx context.Context, pattern string) ([]SearchResult, error) {
+	query := `
+		SELECT id::text, name,
+		       CASE
+		           WHEN LOWER(name) = LOWER(TRIM('%' FROM $1)) THEN 100
+		           WHEN LOWER(name) LIKE LOWER($1) THEN 75
+		           ELSE 50
+		       END as relevance
+		FROM umpires
+		WHERE name ILIKE $1
+		ORDER BY relevance DESC
+		LIMIT 10`
+
+	rows, err := s.db.Query(ctx, query, pattern)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []SearchResult
+	for rows.Next() {
+		var id, name string
+		var relevance int
+
+		if err := rows.Scan(&id, &name, &relevance); err != nil {
+			continue
+		}
+
+		results = append(results, SearchResult{
+			Type:        "umpire",
+			ID:          id,
+			Name:        name,
+			Description: "Umpire",
+			Relevance:   relevance,
+		})
+	}
+
+	return results, nil
+}
+
 // Teams handlers
 func (s *Server) getTeamsHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := contextWithTimeout(r.Context())
@@ -603,6 +938,193 @@ func (s *Server) getTeamHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, team)
+}
+
+// getTeamStatsHandler returns team statistics including W-L record
+func (s *Server) getTeamStatsHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	teamID := vars["id"]
+
+	if teamID == "" {
+		writeError(w, "Team ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Parse season parameter (default to current season)
+	season := getCurrentSeason()
+	if seasonStr := r.URL.Query().Get("season"); seasonStr != "" {
+		if s, err := strconv.Atoi(seasonStr); err == nil {
+			season = s
+		}
+	}
+
+	ctx, cancel := contextWithTimeout(r.Context())
+	defer cancel()
+
+	query := `
+		SELECT
+			COUNT(*) FILTER (WHERE
+				(g.home_team_id = t.id AND g.final_score_home > g.final_score_away) OR
+				(g.away_team_id = t.id AND g.final_score_away > g.final_score_home)
+			) as wins,
+			COUNT(*) FILTER (WHERE
+				(g.home_team_id = t.id AND g.final_score_home < g.final_score_away) OR
+				(g.away_team_id = t.id AND g.final_score_away < g.final_score_home)
+			) as losses,
+			COALESCE(SUM(CASE
+				WHEN g.home_team_id = t.id THEN g.final_score_home
+				WHEN g.away_team_id = t.id THEN g.final_score_away
+				ELSE 0
+			END), 0) as runs_scored,
+			COALESCE(SUM(CASE
+				WHEN g.home_team_id = t.id THEN g.final_score_away
+				WHEN g.away_team_id = t.id THEN g.final_score_home
+				ELSE 0
+			END), 0) as runs_allowed
+		FROM teams t
+		LEFT JOIN games g ON (g.home_team_id = t.id OR g.away_team_id = t.id)
+			AND g.season = $2
+			AND g.status = 'completed'
+			AND g.final_score_home IS NOT NULL
+			AND g.final_score_away IS NOT NULL
+		WHERE t.id::text = $1 OR t.team_id = $1
+		GROUP BY t.id`
+
+	var wins, losses, runsScored, runsAllowed int
+	err := s.db.QueryRow(ctx, query, teamID, season).Scan(&wins, &losses, &runsScored, &runsAllowed)
+
+	if err != nil {
+		log.Printf("Team stats query error: %v", err)
+		writeError(w, "Failed to query team stats", http.StatusInternalServerError)
+		return
+	}
+
+	stats := map[string]interface{}{
+		"season":       season,
+		"wins":         wins,
+		"losses":       losses,
+		"games_played": wins + losses,
+		"winning_pct":  0.0,
+		"runs_scored":  runsScored,
+		"runs_allowed": runsAllowed,
+		"run_diff":     runsScored - runsAllowed,
+	}
+
+	if wins+losses > 0 {
+		stats["winning_pct"] = float64(wins) / float64(wins+losses)
+	}
+
+	writeJSON(w, stats)
+}
+
+// getTeamGamesHandler returns recent games for a team
+func (s *Server) getTeamGamesHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	teamID := vars["id"]
+
+	if teamID == "" {
+		writeError(w, "Team ID is required", http.StatusBadRequest)
+		return
+	}
+
+	params := parseQueryParams(r)
+
+	// Default to current season if not specified
+	if params.Season == nil {
+		currentSeason := getCurrentSeason()
+		params.Season = &currentSeason
+	}
+
+	ctx, cancel := contextWithTimeout(r.Context())
+	defer cancel()
+
+	// Count query
+	countQuery := `
+		SELECT COUNT(*)
+		FROM games g
+		LEFT JOIN teams ht ON g.home_team_id = ht.id
+		LEFT JOIN teams at ON g.away_team_id = at.id
+		WHERE (ht.id::text = $1 OR ht.team_id = $1 OR at.id::text = $1 OR at.team_id = $1)
+			AND g.season = $2`
+
+	var total int
+	err := s.db.QueryRow(ctx, countQuery, teamID, *params.Season).Scan(&total)
+	if err != nil {
+		writeError(w, "Failed to count games", http.StatusInternalServerError)
+		return
+	}
+
+	// Build main query
+	query := `
+		SELECT g.id::text, g.game_id, g.season, COALESCE(g.game_type, ''), g.game_date,
+		       g.home_team_id::text, g.away_team_id::text, g.final_score_home, g.final_score_away,
+		       COALESCE(g.status, ''), COALESCE(g.stadium_id::text, ''), g.created_at, g.updated_at,
+		       COALESCE(ht.name, ''), COALESCE(ht.city, ''), COALESCE(ht.abbreviation, ''),
+		       COALESCE(at.name, ''), COALESCE(at.city, ''), COALESCE(at.abbreviation, ''),
+		       COALESCE(s.name, ''), COALESCE(s.location, '')
+		FROM games g
+		LEFT JOIN teams ht ON g.home_team_id = ht.id
+		LEFT JOIN teams at ON g.away_team_id = at.id
+		LEFT JOIN stadiums s ON g.stadium_id = s.id
+		WHERE (ht.id::text = $1 OR ht.team_id = $1 OR at.id::text = $1 OR at.team_id = $1)
+			AND g.season = $2
+		ORDER BY g.game_date DESC
+		LIMIT $3 OFFSET $4`
+
+	offset := calculateOffset(params.Page, params.PageSize)
+	rows, err := s.db.Query(ctx, query, teamID, *params.Season, params.PageSize, offset)
+	if err != nil {
+		log.Printf("Team games query error: %v", err)
+		writeError(w, "Failed to query team games", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var games []GameWithTeams
+	for rows.Next() {
+		var g GameWithTeams
+		var homeTeamName, homeTeamCity, homeTeamAbbr string
+		var awayTeamName, awayTeamCity, awayTeamAbbr string
+		var stadiumName, stadiumCity string
+
+		err := rows.Scan(
+			&g.ID, &g.GameID, &g.Season, &g.GameType, &g.GameDate,
+			&g.HomeTeamID, &g.AwayTeamID, &g.HomeScore, &g.AwayScore,
+			&g.Status, &g.StadiumID, &g.CreatedAt, &g.UpdatedAt,
+			&homeTeamName, &homeTeamCity, &homeTeamAbbr,
+			&awayTeamName, &awayTeamCity, &awayTeamAbbr,
+			&stadiumName, &stadiumCity,
+		)
+		if err != nil {
+			log.Printf("Failed to scan game row: %v", err)
+			continue
+		}
+
+		// Populate flat team name fields for frontend compatibility
+		// Use name from database as-is (already contains full team name)
+		g.HomeTeamName = homeTeamName
+		g.AwayTeamName = awayTeamName
+
+		g.HomeTeam = &Team{
+			Name:         homeTeamName,
+			City:         &homeTeamCity,
+			Abbreviation: homeTeamAbbr,
+		}
+		g.AwayTeam = &Team{
+			Name:         awayTeamName,
+			City:         &awayTeamCity,
+			Abbreviation: awayTeamAbbr,
+		}
+		g.Stadium = &Stadium{
+			Name: stadiumName,
+			City: stadiumCity,
+		}
+
+		games = append(games, g)
+	}
+
+	response := buildPaginatedResponse(games, total, params.Page, params.PageSize)
+	writeJSON(w, response)
 }
 
 // Players handlers
@@ -771,28 +1293,48 @@ func (s *Server) getPlayerStatsHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := contextWithTimeout(r.Context())
 	defer cancel()
 
-	// Get season parameter, default to current season
-	season := getCurrentSeason()
+	// Get season parameter - if not specified, return all seasons
+	var query string
+	var rows pgx.Rows
+	var err error
+
 	if seasonStr := r.URL.Query().Get("season"); seasonStr != "" {
-		if parsedSeason, err := strconv.Atoi(seasonStr); err == nil {
-			season = parsedSeason
+		// Query specific season
+		season, parseErr := strconv.Atoi(seasonStr)
+		if parseErr != nil {
+			writeError(w, "Invalid season parameter", http.StatusBadRequest)
+			return
 		}
+
+		query = `
+			SELECT player_id, season, stats_type, aggregated_stats, games_played, last_updated
+			FROM player_season_aggregates
+			WHERE player_id = (
+				SELECT id FROM players
+				WHERE id::text = $1 OR player_id = $1
+				LIMIT 1
+			)
+			AND season = $2
+			ORDER BY stats_type`
+
+		rows, err = s.db.Query(ctx, query, playerID, season)
+	} else {
+		// Query all seasons
+		query = `
+			SELECT player_id, season, stats_type, aggregated_stats, games_played, last_updated
+			FROM player_season_aggregates
+			WHERE player_id = (
+				SELECT id FROM players
+				WHERE id::text = $1 OR player_id = $1
+				LIMIT 1
+			)
+			ORDER BY season DESC, stats_type`
+
+		rows, err = s.db.Query(ctx, query, playerID)
 	}
 
-	query := `
-		SELECT player_id, season, stats_type, aggregated_stats, games_played, last_updated
-		FROM player_season_aggregates
-		WHERE player_id = (
-			SELECT id FROM players
-			WHERE id::text = $1 OR player_id = $1
-			LIMIT 1
-		)
-		AND season = $2
-		ORDER BY stats_type`
-
-	rows, err := s.db.Query(ctx, query, playerID, season)
 	if err != nil {
-		log.Printf("Failed to query player stats: %v (playerID=%s, season=%d)", err, playerID, season)
+		log.Printf("Failed to query player stats: %v (playerID=%s)", err, playerID)
 		writeError(w, "Failed to query player stats", http.StatusInternalServerError)
 		return
 	}
@@ -826,16 +1368,13 @@ func (s *Server) getPlayerStatsHandler(w http.ResponseWriter, r *http.Request) {
 		stats = append(stats, stat)
 	}
 
-	if len(stats) == 0 {
-		writeError(w, "No stats found for player", http.StatusNotFound)
-		return
+	// Return empty array instead of 404 if no stats found
+	if stats == nil {
+		stats = []PlayerStats{}
 	}
 
-	writeJSON(w, map[string]interface{}{
-		"player_id": playerID,
-		"season":    season,
-		"stats":     stats,
-	})
+	// Return array directly, not wrapped
+	writeJSON(w, stats)
 }
 
 // Umpires handlers
@@ -965,49 +1504,80 @@ func (s *Server) getUmpireStatsHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := contextWithTimeout(r.Context())
 	defer cancel()
 
-	// Get season parameter, default to current season
-	season := getCurrentSeason()
+	// Get season parameter - if not specified, return all seasons
+	var query string
+	var rows pgx.Rows
+	var err error
+
 	if seasonStr := r.URL.Query().Get("season"); seasonStr != "" {
-		if parsedSeason, err := strconv.Atoi(seasonStr); err == nil {
-			season = parsedSeason
-		}
-	}
-
-	query := `
-		SELECT uss.season, uss.games_umped, uss.accuracy_pct, uss.consistency_pct,
-		       uss.favor_home, uss.expected_accuracy, uss.expected_consistency,
-		       uss.correct_calls, uss.incorrect_calls, uss.total_calls,
-		       uss.strike_pct, uss.ball_pct, uss.k_pct_above_avg, uss.bb_pct_above_avg,
-		       uss.home_plate_calls_per_game, uss.created_at, uss.updated_at
-		FROM umpire_season_stats uss
-		JOIN umpires u ON uss.umpire_id = u.id
-		WHERE (u.id::text = $1 OR u.umpire_id = $1)
-		  AND uss.season = $2`
-
-	var stats UmpireSeasonStats
-	err := s.db.QueryRow(ctx, query, umpireID, season).Scan(
-		&stats.Season, &stats.GamesUmped, &stats.AccuracyPct, &stats.ConsistencyPct,
-		&stats.FavorHome, &stats.ExpectedAccuracy, &stats.ExpectedConsistency,
-		&stats.CorrectCalls, &stats.IncorrectCalls, &stats.TotalCalls,
-		&stats.StrikePct, &stats.BallPct, &stats.KPctAboveAvg,
-		&stats.BBPctAboveAvg, &stats.HomePlateCallsPerGame,
-		&stats.CreatedAt, &stats.UpdatedAt,
-	)
-	if err != nil {
-		if err.Error() == "no rows in result set" {
-			writeError(w, "No stats found for umpire in specified season", http.StatusNotFound)
+		// Query specific season
+		season, parseErr := strconv.Atoi(seasonStr)
+		if parseErr != nil {
+			writeError(w, "Invalid season parameter", http.StatusBadRequest)
 			return
 		}
-		log.Printf("Failed to query umpire stats: %v", err)
+
+		query = `
+			SELECT uss.season, uss.games_umped, uss.accuracy_pct, uss.consistency_pct,
+			       uss.favor_home, uss.expected_accuracy, uss.expected_consistency,
+			       uss.correct_calls, uss.incorrect_calls, uss.total_calls,
+			       uss.strike_pct, uss.ball_pct, uss.k_pct_above_avg, uss.bb_pct_above_avg,
+			       uss.home_plate_calls_per_game, uss.created_at, uss.updated_at
+			FROM umpire_season_stats uss
+			JOIN umpires u ON uss.umpire_id = u.id
+			WHERE (u.id::text = $1 OR u.umpire_id = $1)
+			  AND uss.season = $2`
+
+		rows, err = s.db.Query(ctx, query, umpireID, season)
+	} else {
+		// Query all seasons
+		query = `
+			SELECT uss.season, uss.games_umped, uss.accuracy_pct, uss.consistency_pct,
+			       uss.favor_home, uss.expected_accuracy, uss.expected_consistency,
+			       uss.correct_calls, uss.incorrect_calls, uss.total_calls,
+			       uss.strike_pct, uss.ball_pct, uss.k_pct_above_avg, uss.bb_pct_above_avg,
+			       uss.home_plate_calls_per_game, uss.created_at, uss.updated_at
+			FROM umpire_season_stats uss
+			JOIN umpires u ON uss.umpire_id = u.id
+			WHERE (u.id::text = $1 OR u.umpire_id = $1)
+			ORDER BY uss.season DESC`
+
+		rows, err = s.db.Query(ctx, query, umpireID)
+	}
+
+	if err != nil {
+		log.Printf("Failed to query umpire stats: %v (umpireID=%s)", err, umpireID)
 		writeError(w, "Failed to query umpire stats", http.StatusInternalServerError)
 		return
 	}
+	defer rows.Close()
 
-	writeJSON(w, map[string]interface{}{
-		"umpire_id": umpireID,
-		"season":    season,
-		"stats":     stats,
-	})
+	var statsList []UmpireSeasonStats
+	for rows.Next() {
+		var stats UmpireSeasonStats
+		err := rows.Scan(
+			&stats.Season, &stats.GamesUmped, &stats.AccuracyPct, &stats.ConsistencyPct,
+			&stats.FavorHome, &stats.ExpectedAccuracy, &stats.ExpectedConsistency,
+			&stats.CorrectCalls, &stats.IncorrectCalls, &stats.TotalCalls,
+			&stats.StrikePct, &stats.BallPct, &stats.KPctAboveAvg,
+			&stats.BBPctAboveAvg, &stats.HomePlateCallsPerGame,
+			&stats.CreatedAt, &stats.UpdatedAt,
+		)
+		if err != nil {
+			log.Printf("Failed to scan umpire stats: %v", err)
+			writeError(w, "Failed to scan umpire stats", http.StatusInternalServerError)
+			return
+		}
+		statsList = append(statsList, stats)
+	}
+
+	// Return empty array instead of 404 if no stats found
+	if statsList == nil {
+		statsList = []UmpireSeasonStats{}
+	}
+
+	// Return array directly, not wrapped
+	writeJSON(w, statsList)
 }
 
 // Games handlers
@@ -1049,6 +1619,10 @@ func (s *Server) getGamesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Build ORDER and LIMIT clause
+	// Default to DESC for games (show most recent first) if order not specified
+	if params.Order == "asc" && r.URL.Query().Get("order") == "" {
+		params.Order = "desc"
+	}
 	orderClause := buildOrderClause(params, "g", "game_date")
 	offset := calculateOffset(params.Page, params.PageSize)
 	limitClause := fmt.Sprintf(" LIMIT %d OFFSET %d", params.PageSize, offset)
@@ -1084,23 +1658,42 @@ func (s *Server) getGamesHandler(w http.ResponseWriter, r *http.Request) {
 
 		// Add team information
 		if homeTeamName != nil {
+			// Use the full name from database as-is
+			g.HomeTeamName = *homeTeamName
+			abbr := ""
+			if homeTeamAbbr != nil {
+				abbr = *homeTeamAbbr
+			}
 			g.HomeTeam = &Team{
 				ID:           g.HomeTeamID,
 				Name:         *homeTeamName,
-				Abbreviation: *homeTeamAbbr,
+				City:         homeTeamCity,
+				Abbreviation: abbr,
 			}
 		}
 		if awayTeamName != nil {
+			// Use the full name from database as-is
+			g.AwayTeamName = *awayTeamName
+			abbr := ""
+			if awayTeamAbbr != nil {
+				abbr = *awayTeamAbbr
+			}
 			g.AwayTeam = &Team{
 				ID:           g.AwayTeamID,
 				Name:         *awayTeamName,
-				Abbreviation: *awayTeamAbbr,
+				City:         awayTeamCity,
+				Abbreviation: abbr,
 			}
 		}
 		if stadiumName != nil {
+			location := ""
+			if stadiumLocation != nil {
+				location = *stadiumLocation
+			}
 			g.Stadium = &Stadium{
 				ID:   g.StadiumID,
 				Name: *stadiumName,
+				City: location,
 			}
 		}
 

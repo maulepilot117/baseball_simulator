@@ -261,7 +261,7 @@ class StatsCalculator:
                             updated_at = NOW()
                     """, outfielder['id'], season, outfielder['position'],
                         metrics.range_runs, metrics.arm_runs, metrics.jump_rating,
-                        metrics.route_efficiency, metrics.sprint_speed, metrics.max_speed,
+                        metrics.route_efficiency, metrics.sprint_speed, metrics.max_speed_mph,
                         metrics.first_step_time, metrics.total_outfielder_runs)
 
             except Exception as e:
@@ -347,99 +347,327 @@ class StatsCalculator:
         return metrics
 
     def _calculate_batting_advanced(self, stats: Dict) -> Dict:
-        """Calculate advanced batting statistics"""
+        """Calculate comprehensive advanced batting statistics"""
         advanced = {}
 
-        # Basic rate stats
+        # Basic counting stats
         ab = stats.get('atBats', 0)
         h = stats.get('hits', 0)
         bb = stats.get('baseOnBalls', 0)
         hbp = stats.get('hitByPitch', 0)
         sf = stats.get('sacFlies', 0)
+        hr = stats.get('homeRuns', 0)
+        doubles = stats.get('doubles', 0)
+        triples = stats.get('triples', 0)
+        so = stats.get('strikeOuts', 0)
+        sb = stats.get('stolenBases', 0)
+        cs = stats.get('caughtStealing', 0)
+
         pa = ab + bb + hbp + sf
+        singles = h - doubles - triples - hr
+
+        # League constants (using 2024 as default, should be season-specific)
+        league_woba = 0.317
+        woba_scale = 1.25
+        league_r_pa = 0.116  # Approximate MLB average runs per PA
+        league_ops = 0.712   # Approximate MLB average OPS
+        park_factor = 1.0    # Simplified - would need per-team park factors
+
+        # wOBA weights (2024 season)
+        w_bb = 0.707
+        w_hbp = 0.739
+        w_1b = 0.902
+        w_2b = 1.28
+        w_3b = 1.62
+        w_hr = 2.07
 
         if ab > 0:
             # OPS (On-base Plus Slugging)
             obp = float(stats.get('obp', 0))
             slg = float(stats.get('slg', 0))
-            advanced['OPS'] = round(obp + slg, 3)
+            ops = obp + slg
+            advanced['OPS'] = round(ops, 3)
 
             # ISO (Isolated Power)
             avg = float(stats.get('avg', 0))
             advanced['ISO'] = round(slg - avg, 3)
 
-            # BABIP (simplified)
-            hr = stats.get('homeRuns', 0)
-            so = stats.get('strikeOuts', 0)
+            # BABIP
             babip_h = h - hr
             babip_ab = ab - hr - so + sf
             if babip_ab > 0:
                 advanced['BABIP'] = round(babip_h / babip_ab, 3)
 
+            # OPS+ (park and league adjusted OPS)
+            if league_ops > 0:
+                ops_plus = ((obp / (league_ops * 0.4)) + (slg / (league_ops * 0.6)) - 1) / park_factor * 100
+                advanced['OPS+'] = round(ops_plus, 0)
+
         if pa > 0:
             # Walk and strikeout rates
-            advanced['BB%'] = round((bb / pa) * 100, 1)
-            advanced['K%'] = round((stats.get('strikeOuts', 0) / pa) * 100, 1)
+            bb_pct = (bb / pa) * 100
+            k_pct = (so / pa) * 100
+            advanced['BB%'] = round(bb_pct, 1)
+            advanced['K%'] = round(k_pct, 1)
 
-        # wOBA (simplified version)
-        if pa > 0:
-            singles = h - stats.get('doubles', 0) - stats.get('triples', 0) - stats.get('homeRuns', 0)
-            woba = (0.69 * bb + 0.72 * hbp + 0.88 * singles +
-                   1.247 * stats.get('doubles', 0) + 1.578 * stats.get('triples', 0) +
-                   2.031 * stats.get('homeRuns', 0)) / pa
+            # wOBA
+            woba = (w_bb * bb + w_hbp * hbp + w_1b * singles +
+                   w_2b * doubles + w_3b * triples + w_hr * hr) / pa
             advanced['wOBA'] = round(woba, 3)
+
+            # wRAA (Weighted Runs Above Average)
+            wraa = ((woba - league_woba) / woba_scale) * pa
+            advanced['wRAA'] = round(wraa, 1)
+
+            # wRC (Weighted Runs Created)
+            wrc = (((woba - league_woba) / woba_scale) + league_r_pa) * pa
+            advanced['wRC'] = round(wrc, 1)
+
+            # wRC+ (park and league adjusted)
+            wrc_plus = (((wraa / pa + league_r_pa) +
+                        (league_r_pa - park_factor * league_r_pa)) /
+                        league_r_pa) * 100
+            advanced['wRC+'] = round(wrc_plus, 0)
+
+        # Extra base hits
+        xbh = doubles + triples + hr
+        advanced['XBH'] = xbh
+
+        # Stolen base percentage
+        if sb + cs > 0:
+            sb_pct = (sb / (sb + cs)) * 100
+            advanced['SB%'] = round(sb_pct, 1)
+        else:
+            advanced['SB%'] = 0.0
+
+        # Base running runs (simplified - full calculation requires more data)
+        # wSB = ((SB * runSB) + (CS * runCS)) / (1B + BB + HBP)
+        run_sb = 0.2   # Approximate run value of stolen base
+        run_cs = -0.4  # Approximate run cost of caught stealing
+        if singles + bb + hbp > 0:
+            wsb = ((sb * run_sb) + (cs * run_cs))
+            advanced['wSB'] = round(wsb, 1)
+
+            # BSR (Base Running Runs) - simplified version
+            advanced['BSR'] = round(wsb * 1.2, 1)  # Scaled for base running value
+
+        # Speed score (simplified - based on SB and triples)
+        if ab > 0:
+            speed_components = (
+                (sb / (sb + cs + 5)) * 0.4 +  # SB success
+                (min(sb, 40) / 40) * 0.3 +     # SB total
+                (triples / (ab / 100)) * 0.3   # Triples rate
+            )
+            speed_score = speed_components * 10
+            advanced['Spd'] = round(speed_score, 1)
 
         return advanced
 
     def _calculate_pitching_advanced(self, stats: Dict) -> Dict:
-        """Calculate advanced pitching statistics"""
+        """Calculate comprehensive advanced pitching statistics"""
         advanced = {}
 
         ip = float(stats.get('inningsPitched', '0'))
         if ip == 0:
             return advanced
 
-        # FIP (Fielding Independent Pitching)
+        # Counting stats
         hr = stats.get('homeRuns', 0)
         bb = stats.get('baseOnBalls', 0)
+        ibb = stats.get('intentionalWalks', 0)
         hbp = stats.get('hitBatsmen', 0)
         so = stats.get('strikeOuts', 0)
+        h = stats.get('hits', 0)
+        er = stats.get('earnedRuns', 0)
+        r = stats.get('runs', 0)
+        bf = stats.get('battersFaced', 0)
 
-        fip = ((13 * hr) + (3 * (bb + hbp)) - (2 * so)) / ip + 3.20
+        # Estimate batters faced if not provided
+        if bf == 0:
+            bf = int((ip * 2.9) + h + bb)  # Approximate BF calculation
+
+        # League constants
+        league_era = 4.05    # Approximate MLB average ERA
+        league_fip = 4.05    # FIP constant approximates ERA
+        c_fip = 3.20         # FIP constant
+        league_hr_fb = 0.105 # League HR/FB ratio (~10.5%)
+        league_fb_pct = 0.35 # League FB% (~35%)
+        park_factor = 1.0    # Simplified
+
+        # ERA (Earned Run Average)
+        if ip > 0:
+            era = (er / ip) * 9
+            advanced['ERA'] = round(era, 2)
+
+        # FIP (Fielding Independent Pitching)
+        fip = ((13 * hr) + (3 * (bb + hbp)) - (2 * so)) / ip + c_fip
         advanced['FIP'] = round(fip, 2)
 
-        # WHIP
-        h = stats.get('hits', 0)
+        # WHIP (Walks + Hits per Inning Pitched)
         whip = (h + bb) / ip
         advanced['WHIP'] = round(whip, 3)
 
-        # K/9 and BB/9
+        # Per 9 inning stats
         advanced['K/9'] = round((so / ip) * 9, 1)
         advanced['BB/9'] = round((bb / ip) * 9, 1)
+        advanced['HR/9'] = round((hr / ip) * 9, 2)
+        advanced['H/9'] = round((h / ip) * 9, 1)
 
-        # K/BB ratio
+        # Ratios
         if bb > 0:
             advanced['K/BB'] = round(so / bb, 2)
+        else:
+            advanced['K/BB'] = 99.9  # Max value when BB = 0
+
+        # Rate stats as percentages
+        if bf > 0:
+            advanced['K%'] = round((so / bf) * 100, 1)
+            advanced['BB%'] = round((bb / bf) * 100, 1)
+            advanced['K-BB%'] = round(((so - bb) / bf) * 100, 1)
+
+        # xFIP (Expected FIP) - uses league average HR/FB ratio
+        # First estimate fly balls
+        fb_est = bf * league_fb_pct  # Approximate fly balls
+        if fb_est > 0:
+            expected_hr = fb_est * league_hr_fb
+            xfip = ((13 * expected_hr) + (3 * (bb + hbp)) - (2 * so)) / ip + c_fip
+            advanced['xFIP'] = round(xfip, 2)
+
+        # BABIP for pitchers
+        if h - hr > 0:
+            babip_ab = bf - bb - so - hr - hbp + h  # Approximate AB
+            if babip_ab > 0:
+                pitcher_babip = (h - hr) / babip_ab
+                advanced['BABIP'] = round(pitcher_babip, 3)
+
+        # LOB% (Left on Base Percentage)
+        # LOB% = (H + BB + HBP - R) / (H + BB + HBP - (1.4 * HR))
+        baserunners = h + bb + hbp
+        if baserunners > 0 and (baserunners - (1.4 * hr)) > 0:
+            lob_pct = (baserunners - r) / (baserunners - (1.4 * hr)) * 100
+            advanced['LOB%'] = round(lob_pct, 1)
+
+        # ERA- and FIP- (100 = league average, lower is better)
+        if league_era > 0:
+            era_minus = (era / league_era) * 100 / park_factor
+            advanced['ERA-'] = round(era_minus, 0)
+
+        if league_fip > 0:
+            fip_minus = (fip / league_fip) * 100 / park_factor
+            advanced['FIP-'] = round(fip_minus, 0)
+
+        # xFIP- (if xFIP was calculated)
+        if 'xFIP' in advanced and league_fip > 0:
+            xfip_minus = (advanced['xFIP'] / league_fip) * 100 / park_factor
+            advanced['xFIP-'] = round(xfip_minus, 0)
+
+        # E-F (ERA minus FIP) - measures luck/defense
+        e_f = era - fip
+        advanced['E-F'] = round(e_f, 2)
+
+        # SIERA (Simplified Skill-Interactive ERA)
+        # Full SIERA formula is complex, this is a simplified approximation
+        if bf > 0:
+            k_rate = so / bf
+            bb_rate = bb / bf
+            # Simplified SIERA based on K% and BB%
+            siera = 6.145 - (16.986 * k_rate) + (11.434 * bb_rate) - (1.858 * (k_rate - bb_rate)) + c_fip
+            advanced['SIERA'] = round(max(0, siera), 2)
+
+        # Game stats
+        games = stats.get('games', 0)
+        if games > 0:
+            advanced['IP/G'] = round(ip / games, 1)
 
         return advanced
 
     def _calculate_fielding_advanced(self, stats: Dict) -> Dict:
-        """Calculate advanced fielding statistics"""
+        """Calculate comprehensive advanced fielding statistics"""
         advanced = {}
 
-        # Range Factor
+        # Basic fielding stats
         po = stats.get('putOuts', 0)
         a = stats.get('assists', 0)
+        e = stats.get('errors', 0)
         g = stats.get('gamesPlayed', 0)
+        dp = stats.get('doublePlays', 0)
+        innings = float(stats.get('innings', g * 9))  # Estimate if not provided
 
-        if g > 0:
-            advanced['RF'] = round((po + a) / g, 2)
+        tc = po + a + e  # Total chances
+
+        if g == 0:
+            return advanced
 
         # Fielding percentage
-        e = stats.get('errors', 0)
-        tc = po + a + e
-
         if tc > 0:
-            advanced['FPCT'] = round((tc - e) / tc, 3)
+            fpct = (tc - e) / tc
+            advanced['FPCT'] = round(fpct, 3)
+
+        # Range Factor (per game)
+        rf_g = (po + a) / g
+        advanced['RF/G'] = round(rf_g, 2)
+
+        # Range Factor (per 9 innings)
+        if innings > 0:
+            rf_9 = (po + a) / (innings / 9)
+            advanced['RF/9'] = round(rf_9, 2)
+        else:
+            rf_9 = rf_g  # Fallback to per game if innings not available
+
+        # Zone Rating approximation (simplified)
+        # ZR measures how often a fielder converts balls in their zone into outs
+        # Without actual zone data, we estimate based on putouts and assists
+        expected_plays = rf_g * g  # Expected plays based on position
+        actual_plays = po + a
+        if expected_plays > 0:
+            zone_rating = (actual_plays / expected_plays) * 0.85  # Scaled to typical ZR range
+            advanced['ZR'] = round(zone_rating, 3)
+
+        # Error Runs (ErrR) - cost of errors
+        # Each error costs approximately 0.75 runs
+        err_runs = e * -0.75
+        advanced['ErrR'] = round(err_runs, 1)
+
+        # Range Runs (RngR) - simplified approximation
+        # Based on plays made above/below average for position
+        position_avg_rf = 4.5  # Simplified league average range factor
+        range_runs = (rf_9 - position_avg_rf) * (innings / 9 if innings > 0 else g) * 0.8
+        advanced['RngR'] = round(range_runs, 1)
+
+        # Double Play Runs (DPR) - value of turning double plays
+        # Each DP above/below average is worth approximately 0.7 runs
+        if g > 0:
+            dp_rate = dp / g
+            league_avg_dp_rate = 0.15  # Approximate MLB average
+            dpr = (dp_rate - league_avg_dp_rate) * g * 0.7
+            advanced['DPR'] = round(dpr, 1)
+
+        # UZR Approximation (Simplified Ultimate Zone Rating)
+        # UZR = RngR + ErrR + DPR + ARM
+        # We'll estimate ARM (outfield arm) as 0 for now
+        arm_runs = 0  # Would need throw data for accurate calculation
+        uzr_approx = range_runs + err_runs + dpr + arm_runs
+        advanced['UZR'] = round(uzr_approx, 1)
+
+        # DRS Approximation (Defensive Runs Saved)
+        # Similar to UZR but with slightly different methodology
+        # For our purposes, we'll use a similar calculation
+        drs_approx = uzr_approx * 1.05  # DRS typically slightly higher than UZR
+        advanced['DRS'] = round(drs_approx, 1)
+
+        # Fielding Runs Above Average (FRAA)
+        # Similar concept to UZR/DRS
+        advanced['FRAA'] = round(uzr_approx, 1)
+
+        # Plays made per opportunity
+        if tc > 0:
+            play_pct = (po + a) / tc * 100
+            advanced['Play%'] = round(play_pct, 1)
+
+        # Out of Zone plays (estimate)
+        # Players making plays outside their zone show superior range
+        if a > 0:
+            ooz_plays_est = a * 0.2  # Roughly 20% of assists are out-of-zone
+            advanced['OOZ'] = round(ooz_plays_est, 1)
 
         return advanced

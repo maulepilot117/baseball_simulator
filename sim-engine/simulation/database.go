@@ -180,6 +180,7 @@ func (se *SimulationEngine) storeSimulationMetadata(ctx context.Context, result 
 			average_pitches DECIMAL(5,1),
 			high_leverage_events JSONB,
 			statistics JSONB,
+			player_performance JSONB,
 			created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
 			updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 		)
@@ -189,12 +190,25 @@ func (se *SimulationEngine) storeSimulationMetadata(ctx context.Context, result 
 		log.Printf("Warning: failed to create metadata table: %v", err)
 	}
 
+	// Serialize player performance
+	var playerPerfJSON []byte
+	if result.PlayerPerformance != nil {
+		var err error
+		playerPerfJSON, err = json.Marshal(result.PlayerPerformance)
+		if err != nil {
+			log.Printf("Warning: failed to marshal player performance: %v", err)
+			playerPerfJSON = []byte("{}")
+		}
+	} else {
+		playerPerfJSON = []byte("{}")
+	}
+
 	metadataQuery := `
 		INSERT INTO simulation_metadata (
 			run_id, total_simulations, home_wins, away_wins, ties,
-			average_game_duration, average_pitches, high_leverage_events, 
-			statistics
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			average_game_duration, average_pitches, high_leverage_events,
+			statistics, player_performance
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (run_id) DO UPDATE SET
 			total_simulations = EXCLUDED.total_simulations,
 			home_wins = EXCLUDED.home_wins,
@@ -204,6 +218,7 @@ func (se *SimulationEngine) storeSimulationMetadata(ctx context.Context, result 
 			average_pitches = EXCLUDED.average_pitches,
 			high_leverage_events = EXCLUDED.high_leverage_events,
 			statistics = EXCLUDED.statistics,
+			player_performance = EXCLUDED.player_performance,
 			updated_at = NOW()
 	`
 
@@ -217,6 +232,7 @@ func (se *SimulationEngine) storeSimulationMetadata(ctx context.Context, result 
 		result.AveragePitches,
 		highLeverageEventsJSON,
 		statisticsJSON,
+		playerPerfJSON,
 	)
 
 	return err
@@ -224,6 +240,8 @@ func (se *SimulationEngine) storeSimulationMetadata(ctx context.Context, result 
 
 // calculateAggregatedResults processes all simulation results into aggregated statistics
 func (se *SimulationEngine) calculateAggregatedResults(runID string, results []models.SimulationResult) *models.AggregatedResult {
+	ctx := context.Background()
+
 	if len(results) == 0 {
 		return &models.AggregatedResult{RunID: runID}
 	}
@@ -239,6 +257,12 @@ func (se *SimulationEngine) calculateAggregatedResults(runID string, results []m
 	var totalHomeScore, totalAwayScore float64
 	var totalDuration, totalPitches float64
 	var allHighLeverageEvents []models.GameEvent
+
+	// Initialize player stat accumulators
+	homeBattingAccum := make(map[string]*models.PlayerBattingStats)
+	awayBattingAccum := make(map[string]*models.PlayerBattingStats)
+	homePitchingAccum := make(map[string]*models.PlayerPitchingStats)
+	awayPitchingAccum := make(map[string]*models.PlayerPitchingStats)
 
 	// Process each result
 	for _, result := range results {
@@ -268,6 +292,14 @@ func (se *SimulationEngine) calculateAggregatedResults(runID string, results []m
 				allHighLeverageEvents = append(allHighLeverageEvents, event)
 			}
 		}
+
+		// Aggregate player stats
+		if result.PlayerStats != nil {
+			se.aggregatePlayerStats(homeBattingAccum, result.PlayerStats.HomeBatting)
+			se.aggregatePlayerStats(awayBattingAccum, result.PlayerStats.AwayBatting)
+			se.aggregatePitcherStats(homePitchingAccum, result.PlayerStats.HomePitching)
+			se.aggregatePitcherStats(awayPitchingAccum, result.PlayerStats.AwayPitching)
+		}
 	}
 
 	// Calculate probabilities
@@ -296,6 +328,30 @@ func (se *SimulationEngine) calculateAggregatedResults(runID string, results []m
 		allHighLeverageEvents = se.selectTopLeverageEvents(allHighLeverageEvents, 50)
 	}
 	aggregated.HighLeverageEvents = allHighLeverageEvents
+
+	// Average player stats across all simulations
+	numSims := float64(len(results))
+	homeBatting := se.averagePlayerStats(homeBattingAccum, numSims)
+	awayBatting := se.averagePlayerStats(awayBattingAccum, numSims)
+	homePitching := se.averagePitcherStats(homePitchingAccum, numSims)
+	awayPitching := se.averagePitcherStats(awayPitchingAccum, numSims)
+
+	// Enrich with player names from database
+	se.enrichWithPlayerNames(ctx, homeBatting)
+	se.enrichWithPlayerNames(ctx, awayBatting)
+	se.enrichWithPitcherNames(ctx, homePitching)
+	se.enrichWithPitcherNames(ctx, awayPitching)
+
+	aggregated.PlayerPerformance = &models.AggregatedPlayerPerformance{
+		HomeTeam: models.TeamPerformance{
+			Batting:  homeBatting,
+			Pitching: homePitching,
+		},
+		AwayTeam: models.TeamPerformance{
+			Batting:  awayBatting,
+			Pitching: awayPitching,
+		},
+	}
 
 	return aggregated
 }
@@ -442,13 +498,14 @@ func (se *SimulationEngine) GetRunResult(ctx context.Context, runID string) (*mo
 		       COALESCE(sm.average_game_duration, 0) as average_game_duration,
 		       COALESCE(sm.average_pitches, 0) as average_pitches,
 		       COALESCE(sm.high_leverage_events, '[]'::jsonb) as high_leverage_events,
-		       COALESCE(sm.statistics, '{}'::jsonb) as statistics
+		       COALESCE(sm.statistics, '{}'::jsonb) as statistics,
+		       COALESCE(sm.player_performance, '{}'::jsonb) as player_performance
 		FROM simulation_aggregates sa
 		LEFT JOIN simulation_metadata sm ON sa.run_id = sm.run_id
 		WHERE sa.run_id = $1
 	`
 
-	var highLeverageEventsJSON, statisticsJSON []byte
+	var highLeverageEventsJSON, statisticsJSON, playerPerfJSON []byte
 
 	err := se.db.QueryRow(ctx, query, runID).Scan(
 		&result.RunID,
@@ -467,6 +524,7 @@ func (se *SimulationEngine) GetRunResult(ctx context.Context, runID string) (*mo
 		&result.AveragePitches,
 		&highLeverageEventsJSON,
 		&statisticsJSON,
+		&playerPerfJSON,
 	)
 
 	if err != nil {
@@ -494,6 +552,16 @@ func (se *SimulationEngine) GetRunResult(ctx context.Context, runID string) (*mo
 		result.Statistics = make(map[string]float64)
 	}
 
+	// Parse player performance
+	if len(playerPerfJSON) > 2 { // Check if it's more than just "{}"
+		var playerPerf models.AggregatedPlayerPerformance
+		if err := json.Unmarshal(playerPerfJSON, &playerPerf); err != nil {
+			log.Printf("Failed to parse player performance: %v", err)
+		} else {
+			result.PlayerPerformance = &playerPerf
+		}
+	}
+
 	// Calculate tie probability
 	result.TieProbability = 1.0 - result.HomeWinProbability - result.AwayWinProbability
 
@@ -510,6 +578,146 @@ func (se *SimulationEngine) CleanupOldRuns() {
 	for runID, status := range se.activeRuns {
 		if status.StartTime.Before(cutoff) {
 			delete(se.activeRuns, runID)
+		}
+	}
+}
+
+// aggregatePlayerStats accumulates batting stats from a single game simulation
+func (se *SimulationEngine) aggregatePlayerStats(accum map[string]*models.PlayerBattingStats, gameBatting map[string]*models.PlayerGameBatting) {
+	for playerID, gameStats := range gameBatting {
+		if _, exists := accum[playerID]; !exists {
+			accum[playerID] = &models.PlayerBattingStats{
+				PlayerID:   playerID,
+				PlayerName: "", // Will be set from database query
+			}
+		}
+
+		stats := accum[playerID]
+		stats.PA += float64(gameStats.PA)
+		stats.AB += float64(gameStats.AB)
+		stats.H += float64(gameStats.H)
+		stats.Singles += float64(gameStats.Singles)
+		stats.Doubles += float64(gameStats.Doubles)
+		stats.Triples += float64(gameStats.Triples)
+		stats.HR += float64(gameStats.HR)
+		stats.RBI += float64(gameStats.RBI)
+		stats.R += float64(gameStats.R)
+		stats.BB += float64(gameStats.BB)
+		stats.K += float64(gameStats.K)
+	}
+}
+
+// aggregatePitcherStats accumulates pitching stats from a single game simulation
+func (se *SimulationEngine) aggregatePitcherStats(accum map[string]*models.PlayerPitchingStats, gamePitching map[string]*models.PlayerGamePitching) {
+	for playerID, gameStats := range gamePitching {
+		if _, exists := accum[playerID]; !exists {
+			accum[playerID] = &models.PlayerPitchingStats{
+				PlayerID: playerID,
+			}
+		}
+
+		stats := accum[playerID]
+		stats.IP += float64(gameStats.Outs) / 3.0 // Convert outs to innings
+		stats.H += float64(gameStats.H)
+		stats.R += float64(gameStats.R)
+		stats.ER += float64(gameStats.ER)
+		stats.BB += float64(gameStats.BB)
+		stats.K += float64(gameStats.K)
+		stats.HR += float64(gameStats.HR)
+		stats.Pitches += float64(gameStats.Pitches)
+	}
+}
+
+// averagePlayerStats divides accumulated batting stats by number of simulations
+func (se *SimulationEngine) averagePlayerStats(accum map[string]*models.PlayerBattingStats, numSims float64) map[string]models.PlayerBattingStats {
+	result := make(map[string]models.PlayerBattingStats)
+
+	for playerID, stats := range accum {
+		avgStats := models.PlayerBattingStats{
+			PlayerID:   stats.PlayerID,
+			PlayerName: stats.PlayerName,
+			Position:   stats.Position,
+			PA:         stats.PA / numSims,
+			AB:         stats.AB / numSims,
+			H:          stats.H / numSims,
+			Singles:    stats.Singles / numSims,
+			Doubles:    stats.Doubles / numSims,
+			Triples:    stats.Triples / numSims,
+			HR:         stats.HR / numSims,
+			RBI:        stats.RBI / numSims,
+			R:          stats.R / numSims,
+			BB:         stats.BB / numSims,
+			K:          stats.K / numSims,
+		}
+
+		// Calculate derived stats
+		if avgStats.AB > 0 {
+			avgStats.AVG = avgStats.H / avgStats.AB
+			totalBases := avgStats.Singles + (avgStats.Doubles * 2) + (avgStats.Triples * 3) + (avgStats.HR * 4)
+			avgStats.SLG = totalBases / avgStats.AB
+		}
+		if avgStats.PA > 0 {
+			avgStats.OBP = (avgStats.H + avgStats.BB) / avgStats.PA
+		}
+
+		result[playerID] = avgStats
+	}
+
+	return result
+}
+
+// averagePitcherStats divides accumulated pitching stats by number of simulations
+func (se *SimulationEngine) averagePitcherStats(accum map[string]*models.PlayerPitchingStats, numSims float64) map[string]models.PlayerPitchingStats {
+	result := make(map[string]models.PlayerPitchingStats)
+
+	for playerID, stats := range accum {
+		avgStats := models.PlayerPitchingStats{
+			PlayerID:   stats.PlayerID,
+			PlayerName: stats.PlayerName,
+			IP:         stats.IP / numSims,
+			H:          stats.H / numSims,
+			R:          stats.R / numSims,
+			ER:         stats.ER / numSims,
+			BB:         stats.BB / numSims,
+			K:          stats.K / numSims,
+			HR:         stats.HR / numSims,
+			Pitches:    stats.Pitches / numSims,
+		}
+
+		// Calculate derived stats
+		if avgStats.IP > 0 {
+			avgStats.ERA = (avgStats.ER * 9) / avgStats.IP
+			avgStats.WHIP = (avgStats.H + avgStats.BB) / avgStats.IP
+		}
+
+		result[playerID] = avgStats
+	}
+
+	return result
+}
+
+// enrichWithPlayerNames populates player names from the database
+func (se *SimulationEngine) enrichWithPlayerNames(ctx context.Context, stats map[string]models.PlayerBattingStats) {
+	for playerID, stat := range stats {
+		var name string
+		query := `SELECT full_name FROM players WHERE player_id = $1 LIMIT 1`
+		err := se.db.QueryRow(ctx, query, playerID).Scan(&name)
+		if err == nil {
+			stat.PlayerName = name
+			stats[playerID] = stat
+		}
+	}
+}
+
+// enrichWithPitcherNames populates pitcher names from the database
+func (se *SimulationEngine) enrichWithPitcherNames(ctx context.Context, stats map[string]models.PlayerPitchingStats) {
+	for playerID, stat := range stats {
+		var name string
+		query := `SELECT full_name FROM players WHERE player_id = $1 LIMIT 1`
+		err := se.db.QueryRow(ctx, query, playerID).Scan(&name)
+		if err == nil {
+			stat.PlayerName = name
+			stats[playerID] = stat
 		}
 	}
 }

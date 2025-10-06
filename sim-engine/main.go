@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"sim-engine/simulation"
+	"sim-engine/weather"
 )
 
 type Server struct {
@@ -66,13 +67,23 @@ type SimulationStatus struct {
 
 type SimulationResult struct {
 	RunID                 string                 `json:"run_id"`
+	GameID                string                 `json:"game_id"`
+	HomeTeam              string                 `json:"home_team"`
+	AwayTeam              string                 `json:"away_team"`
+	TotalSimulations      int                    `json:"total_simulations"`
+	HomeWins              int                    `json:"home_wins"`
+	AwayWins              int                    `json:"away_wins"`
 	HomeWinProbability    float64                `json:"home_win_probability"`
 	AwayWinProbability    float64                `json:"away_win_probability"`
 	ExpectedHomeScore     float64                `json:"expected_home_score"`
 	ExpectedAwayScore     float64                `json:"expected_away_score"`
 	HomeScoreDistribution map[int]int            `json:"home_score_distribution"`
 	AwayScoreDistribution map[int]int            `json:"away_score_distribution"`
-	Metadata              map[string]interface{} `json:"metadata"`
+	PlayerPerformance     interface{}            `json:"player_performance,omitempty"`
+	Weather               map[string]interface{} `json:"weather,omitempty"`
+	ParkFactors           map[string]interface{} `json:"park_factors,omitempty"`
+	Umpire                map[string]interface{} `json:"umpire,omitempty"`
+	Metadata              map[string]interface{} `json:"metadata,omitempty"`
 }
 
 func NewConfig() *Config {
@@ -127,6 +138,28 @@ func NewServer(config *Config) (*Server, error) {
 	simEngine := simulation.NewSimulationEngine(db, config.Workers, config.SimulationRuns)
 	simEngine.StartPerformanceMonitoring()
 
+	// Initialize weather service if API key is configured
+	weatherAPIKey := os.Getenv("OPENWEATHER_API_KEY")
+	if weatherAPIKey != "" {
+		weatherService := weather.NewService(weatherAPIKey)
+		weatherService.StartCacheCleanup()
+
+		// Validate API key
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := weatherService.ValidateAPIKey(ctx); err != nil {
+			log.Printf("Warning: Weather API key validation failed: %v", err)
+			log.Printf("Simulations will use default weather conditions")
+		} else {
+			log.Printf("Weather service initialized successfully")
+			// Wrap weather service with adapter
+			adapter := simulation.NewWeatherServiceAdapter(weatherService)
+			simEngine.SetWeatherService(adapter)
+		}
+		cancel()
+	} else {
+		log.Printf("No OPENWEATHER_API_KEY configured, simulations will use default weather")
+	}
+
 	s := &Server{
 		db:        db,
 		config:    config,
@@ -146,6 +179,9 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("/simulate", s.simulateHandler).Methods("POST")
 	s.router.HandleFunc("/simulation/{id}/status", s.simulationStatusHandler).Methods("GET")
 	s.router.HandleFunc("/simulation/{id}/result", s.simulationResultHandler).Methods("GET")
+
+	// Daily simulation endpoint
+	s.router.HandleFunc("/simulate/daily", s.simulateDailyHandler).Methods("POST")
 
 	// Apply middleware
 	s.router.Use(s.loggingMiddleware)
@@ -327,17 +363,59 @@ func (s *Server) simulationResultHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Convert to response format
+	// Get game context (weather, stadium, umpire, teams) used in the simulation
+	var gameID string
+	var homeTeamName, awayTeamName string
+	var weatherJSON, parkFactorsJSON, umpireTendenciesJSON []byte
+	var stadiumName, stadiumLocation, umpireName *string
+	var stadiumAltitude *int
+
+	contextQuery := `
+		SELECT g.game_id,
+		       ht.name as home_team_name,
+		       at.name as away_team_name,
+		       g.weather_data,
+		       s.name, s.location, s.altitude, s.park_factors,
+		       u.name, u.tendencies
+		FROM simulation_runs sr
+		JOIN games g ON sr.game_id = g.id
+		JOIN teams ht ON g.home_team_id = ht.id
+		JOIN teams at ON g.away_team_id = at.id
+		LEFT JOIN stadiums s ON g.stadium_id = s.id
+		LEFT JOIN umpires u ON g.home_plate_umpire_id = u.id
+		WHERE sr.id = $1
+	`
+
+	err = s.db.QueryRow(r.Context(), contextQuery, runID).Scan(
+		&gameID,
+		&homeTeamName,
+		&awayTeamName,
+		&weatherJSON,
+		&stadiumName,
+		&stadiumLocation,
+		&stadiumAltitude,
+		&parkFactorsJSON,
+		&umpireName,
+		&umpireTendenciesJSON,
+	)
+
+	// Convert to response format with defaults if game query failed
 	result := SimulationResult{
 		RunID:                 aggregatedResult.RunID,
+		GameID:                gameID,
+		HomeTeam:              homeTeamName,
+		AwayTeam:              awayTeamName,
+		TotalSimulations:      aggregatedResult.TotalSimulations,
+		HomeWins:              aggregatedResult.HomeWins,
+		AwayWins:              aggregatedResult.AwayWins,
 		HomeWinProbability:    aggregatedResult.HomeWinProbability,
 		AwayWinProbability:    aggregatedResult.AwayWinProbability,
 		ExpectedHomeScore:     aggregatedResult.ExpectedHomeScore,
 		ExpectedAwayScore:     aggregatedResult.ExpectedAwayScore,
 		HomeScoreDistribution: aggregatedResult.HomeScoreDistribution,
 		AwayScoreDistribution: aggregatedResult.AwayScoreDistribution,
+		PlayerPerformance:     aggregatedResult.PlayerPerformance,
 		Metadata: map[string]interface{}{
-			"total_simulations":     aggregatedResult.TotalSimulations,
 			"average_game_duration": aggregatedResult.AverageGameDuration,
 			"average_pitches":       aggregatedResult.AveragePitches,
 			"high_leverage_events":  len(aggregatedResult.HighLeverageEvents),
@@ -345,7 +423,224 @@ func (s *Server) simulationResultHandler(w http.ResponseWriter, r *http.Request)
 		},
 	}
 
+	// Add simulation context (weather, park, umpire) if available
+	if err == nil {
+		// Parse and add weather
+		if len(weatherJSON) > 0 {
+			var weather map[string]interface{}
+			if json.Unmarshal(weatherJSON, &weather) == nil {
+				result.Weather = weather
+			}
+		}
+
+		// Parse and add park factors
+		if len(parkFactorsJSON) > 0 {
+			var parkFactors map[string]interface{}
+			if json.Unmarshal(parkFactorsJSON, &parkFactors) == nil {
+				result.ParkFactors = parkFactors
+			}
+		}
+
+		// Add stadium info if available
+		if stadiumName != nil {
+			if result.Metadata == nil {
+				result.Metadata = make(map[string]interface{})
+			}
+			result.Metadata["stadium"] = map[string]interface{}{
+				"name":     *stadiumName,
+				"location": stadiumLocation,
+				"altitude": stadiumAltitude,
+			}
+		}
+
+		// Parse and add umpire info
+		if umpireName != nil {
+			umpireInfo := map[string]interface{}{
+				"name": *umpireName,
+			}
+			if len(umpireTendenciesJSON) > 0 {
+				var tendencies map[string]interface{}
+				if json.Unmarshal(umpireTendenciesJSON, &tendencies) == nil {
+					umpireInfo["tendencies"] = tendencies
+				}
+			}
+			result.Umpire = umpireInfo
+		}
+	} else {
+		log.Printf("Warning: Failed to load game context: %v", err)
+	}
+
 	writeJSON(w, result)
+}
+
+// DailySimulationRequest for batch simulating multiple games
+type DailySimulationRequest struct {
+	Date           string                 `json:"date"`            // YYYY-MM-DD format, defaults to today
+	SimulationRuns int                    `json:"simulation_runs"` // Optional override
+	Config         map[string]interface{} `json:"config,omitempty"`
+}
+
+// DailySimulationResponse contains all simulations for the day
+type DailySimulationResponse struct {
+	Date         string              `json:"date"`
+	GamesCount   int                 `json:"games_count"`
+	Simulations  []GameSimulation    `json:"simulations"`
+	StartedAt    time.Time           `json:"started_at"`
+	Message      string              `json:"message"`
+}
+
+// GameSimulation represents a single game's simulation in the batch
+type GameSimulation struct {
+	GameID     string `json:"game_id"`
+	HomeTeam   string `json:"home_team"`
+	AwayTeam   string `json:"away_team"`
+	RunID      string `json:"run_id"`
+	Status     string `json:"status"`
+	Error      string `json:"error,omitempty"`
+}
+
+func (s *Server) simulateDailyHandler(w http.ResponseWriter, r *http.Request) {
+	var req DailySimulationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		// Allow empty body - use defaults
+		req.Date = time.Now().Format("2006-01-02")
+	}
+
+	// Parse or default date
+	var targetDate time.Time
+	var err error
+	if req.Date == "" {
+		targetDate = time.Now()
+	} else {
+		targetDate, err = time.Parse("2006-01-02", req.Date)
+		if err != nil {
+			http.Error(w, "Invalid date format, use YYYY-MM-DD", http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Query scheduled games for the target date
+	query := `
+		SELECT g.game_id, ht.name as home_team, at.name as away_team
+		FROM games g
+		JOIN teams ht ON g.home_team_id = ht.id
+		JOIN teams at ON g.away_team_id = at.id
+		WHERE g.game_date = $1 AND g.status = 'scheduled'
+		ORDER BY g.game_time
+	`
+
+	rows, err := s.db.Query(r.Context(), query, targetDate)
+	if err != nil {
+		log.Printf("Failed to query games: %v", err)
+		http.Error(w, "Failed to query games", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var games []struct {
+		GameID   string
+		HomeTeam string
+		AwayTeam string
+	}
+
+	for rows.Next() {
+		var game struct {
+			GameID   string
+			HomeTeam string
+			AwayTeam string
+		}
+		if err := rows.Scan(&game.GameID, &game.HomeTeam, &game.AwayTeam); err != nil {
+			log.Printf("Error scanning game: %v", err)
+			continue
+		}
+		games = append(games, game)
+	}
+
+	if len(games) == 0 {
+		response := DailySimulationResponse{
+			Date:        targetDate.Format("2006-01-02"),
+			GamesCount:  0,
+			Simulations: []GameSimulation{},
+			StartedAt:   time.Now(),
+			Message:     "No scheduled games found for this date",
+		}
+		writeJSON(w, response)
+		return
+	}
+
+	// Start simulations for all games
+	simulationRuns := req.SimulationRuns
+	if simulationRuns == 0 {
+		simulationRuns = s.config.SimulationRuns
+	}
+
+	var simulations []GameSimulation
+
+	for _, game := range games {
+		// Create simulation run for this game
+		runID := uuid.New().String()
+
+		// Validate game exists in database
+		var gameExists bool
+		err := s.db.QueryRow(r.Context(),
+			"SELECT EXISTS(SELECT 1 FROM games WHERE game_id = $1)",
+			game.GameID).Scan(&gameExists)
+
+		if err != nil || !gameExists {
+			simulations = append(simulations, GameSimulation{
+				GameID:   game.GameID,
+				HomeTeam: game.HomeTeam,
+				AwayTeam: game.AwayTeam,
+				RunID:    runID,
+				Status:   "error",
+				Error:    "Game not found in database",
+			})
+			continue
+		}
+
+		// Insert simulation run
+		configJSON, _ := json.Marshal(req.Config)
+		_, err = s.db.Exec(r.Context(), `
+			INSERT INTO simulation_runs (id, game_id, config, total_runs, status)
+			VALUES ($1, (SELECT id FROM games WHERE game_id = $2), $3, $4, 'pending')
+		`, runID, game.GameID, configJSON, simulationRuns)
+
+		if err != nil {
+			log.Printf("Failed to create simulation run for game %s: %v", game.GameID, err)
+			simulations = append(simulations, GameSimulation{
+				GameID:   game.GameID,
+				HomeTeam: game.HomeTeam,
+				AwayTeam: game.AwayTeam,
+				RunID:    runID,
+				Status:   "error",
+				Error:    fmt.Sprintf("Failed to create simulation: %v", err),
+			})
+			continue
+		}
+
+		// Start simulation in background
+		go s.simEngine.RunSimulation(runID, game.GameID, simulationRuns, req.Config)
+
+		simulations = append(simulations, GameSimulation{
+			GameID:   game.GameID,
+			HomeTeam: game.HomeTeam,
+			AwayTeam: game.AwayTeam,
+			RunID:    runID,
+			Status:   "started",
+		})
+
+		log.Printf("Started simulation for game %s (%s vs %s)", game.GameID, game.AwayTeam, game.HomeTeam)
+	}
+
+	response := DailySimulationResponse{
+		Date:        targetDate.Format("2006-01-02"),
+		GamesCount:  len(games),
+		Simulations: simulations,
+		StartedAt:   time.Now(),
+		Message:     fmt.Sprintf("Started simulations for %d games", len(simulations)),
+	}
+
+	writeJSON(w, response)
 }
 
 // Middleware

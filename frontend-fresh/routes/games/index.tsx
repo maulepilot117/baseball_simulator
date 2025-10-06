@@ -44,13 +44,15 @@ export default function GamesPage({ data }: PageProps<GamesPageData>) {
 
   // Group games by date
   const gamesByDate: Record<string, Game[]> = {};
-  gameList.forEach((game) => {
-    const date = game.game_date.split("T")[0];
-    if (!gamesByDate[date]) {
-      gamesByDate[date] = [];
-    }
-    gamesByDate[date].push(game);
-  });
+  if (gameList && Array.isArray(gameList)) {
+    gameList.forEach((game) => {
+      const date = game.game_date.split("T")[0];
+      if (!gamesByDate[date]) {
+        gamesByDate[date] = [];
+      }
+      gamesByDate[date].push(game);
+    });
+  }
 
   return (
     <div class="min-h-screen bg-gray-50">

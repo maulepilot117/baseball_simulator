@@ -106,8 +106,8 @@ async def periodic_data_fetch(db_pool: asyncpg.Pool):
 
             # Create MLB API client and fetch data
             async with MLBStatsAPI(db_pool) as mlb_api:
-                # Only fetch up to yesterday to avoid in-progress/future games
-                end_date = datetime.now() - timedelta(days=1)  # Changed: subtract 1 day
+                # Include today for live/postseason games
+                end_date = datetime.now()
                 start_date = end_date - timedelta(days=7)
                 await mlb_api.fetch_all_data(start_date, end_date)
 
@@ -258,9 +258,11 @@ async def manual_fetch(db_pool: asyncpg.Pool, request: FetchRequest):
             end_date = request.end_date or (datetime.now() - timedelta(days=1))  # Changed
             start_date = request.start_date or (end_date - timedelta(days=30))
 
-            # Ensure we're not fetching future games
-            if end_date.date() >= datetime.now().date():
-                end_date = datetime.now() - timedelta(days=1)
+            # Allow fetching today's and near-future scheduled games
+            # Only prevent fetching more than 7 days in the future
+            max_future_date = datetime.now() + timedelta(days=7)
+            if end_date > max_future_date:
+                end_date = max_future_date
 
             if request.fetch_type == FetchType.all:
                 await mlb_api.fetch_all_data(start_date, end_date)

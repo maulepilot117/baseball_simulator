@@ -15,6 +15,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_not_e
 from config import settings
 from stats_calculator import StatsCalculator
 from umpire_scraper import update_umpire_scorecards
+from game_details_fetcher import GameDetailsFetcher
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,8 @@ class MLBStatsAPI:
             limits=httpx.Limits(max_connections=100, max_keepalive_connections=50)
         )
         self.stats_calculator = StatsCalculator(db_pool)
-        
+        self.game_details_fetcher = GameDetailsFetcher(db_pool, self.client)
+
         # Simple caches for ID mappings
         self._team_cache: Dict[int, str] = {}
         self._player_cache: Dict[int, str] = {}
@@ -317,20 +319,18 @@ class MLBStatsAPI:
             return {}
     
     async def _fetch_games_for_date(self, date: datetime) -> List[Dict]:
-        """Fetch all games for a specific date"""
+        """Fetch all games for a specific date (including scheduled games for simulations)"""
         date_str = date.strftime("%Y-%m-%d")
-        
-        # Don't fetch games from today or future
-        if date.date() >= datetime.now().date():
-            logger.info(f"Skipping {date_str} - only fetching completed games from previous days")
-            return []
-        
+
         try:
             data = await self._get("/schedule", {"sportId": 1, "date": date_str})
             games = []
             game_detail_tasks = []
-            
+
+            logger.info(f"API returned {len(data.get('dates', []))} dates with games for {date_str}")
+
             for date_data in data.get("dates", []):
+                logger.info(f"Processing date {date_data.get('date')} with {len(date_data.get('games', []))} games")
                 for game in date_data.get("games", []):
                     
                     game_type = game.get("gameType", "")
@@ -343,38 +343,45 @@ class MLBStatsAPI:
                     
                     # Log game status for debugging
                     logger.debug(f"Game {game_pk} status: {game_status.get('codedGameState')} - {game_status.get('detailedState')}")
-                    
-                    # Only process games that are truly final
-                    # Check multiple conditions to ensure game was actually played
+
+                    # Process both final and scheduled games
                     coded_state = game_status.get("codedGameState", "")
                     detailed_state = game_status.get("detailedState", "")
                     abstract_state = game_status.get("abstractGameState", "")
-                    
-                    # Skip if game is not final or was postponed/suspended/cancelled
-                    if coded_state != "F" or abstract_state != "Final":
-                        logger.debug(f"Skipping game {game_pk} - not final: {detailed_state}")
-                        continue
-                        
-                    # Additional check for postponed/suspended games that might still show as "F"
+
+                    # Skip postponed/suspended/cancelled games
                     if any(status in detailed_state.lower() for status in ["postponed", "suspended", "cancelled"]):
                         logger.debug(f"Skipping game {game_pk} - {detailed_state}")
                         continue
-                    
-                    # Verify game has valid scores
+
+                    # Fetch scheduled games (for simulations) and final games (for historical data)
+                    is_scheduled = coded_state == "S" and abstract_state == "Preview"
+                    is_final = coded_state == "F" and abstract_state == "Final"
+
+                    if not (is_scheduled or is_final):
+                        logger.debug(f"Skipping game {game_pk} - not scheduled or final: {detailed_state}")
+                        continue
+
+                    # Get scores (will be None for scheduled games)
                     home_score = game["teams"]["home"].get("score")
                     away_score = game["teams"]["away"].get("score")
-                    
-                    if home_score is None or away_score is None:
-                        logger.debug(f"Skipping game {game_pk} - no valid scores")
+
+                    # For final games, require valid scores
+                    if is_final and (home_score is None or away_score is None):
+                        logger.debug(f"Skipping final game {game_pk} - no valid scores")
                         continue
-                    
+
+                    # Determine game status
+                    game_status_str = "scheduled" if is_scheduled else detailed_state
+
                     game_info = {
                         'game_pk': game_pk,
                         'game_date': date,
                         'home_team_id': game["teams"]["home"]["team"]["id"],
                         'away_team_id': game["teams"]["away"]["team"]["id"],
                         'home_score': home_score,
-                        'away_score': away_score
+                        'away_score': away_score,
+                        'status': game_status_str
                     }
                     
                     # Save basic game info
@@ -623,17 +630,18 @@ class MLBStatsAPI:
             logger.error(f"Failed to save player {player.get('mlb_id')}: {e}")
     
     async def _save_game(self, game: Dict):
-        """Save game to database"""
+        """Save game to database and fetch detailed game information"""
         try:
             home_team_uuid = await self._get_team_uuid_by_mlb_id(game['home_team_id'])
             away_team_uuid = await self._get_team_uuid_by_mlb_id(game['away_team_id'])
-            
+
             # Get stadium from home team
             stadium_uuid = await self.db_pool.fetchval("""
                 SELECT stadium_id FROM teams WHERE id = $1
             """, home_team_uuid)
-            
-            await self.db_pool.execute("""
+
+            # Save game
+            result = await self.db_pool.fetchrow("""
                 INSERT INTO games (
                     game_id, game_date, home_team_id, away_team_id,
                     stadium_id, season, status, final_score_home, final_score_away
@@ -644,11 +652,30 @@ class MLBStatsAPI:
                     final_score_away = EXCLUDED.final_score_away,
                     status = EXCLUDED.status,
                     updated_at = NOW()
+                RETURNING id
             """, str(game['game_pk']), game['game_date'].date(),
                 home_team_uuid, away_team_uuid, stadium_uuid,
-                game['game_date'].year, 'completed', 
+                game['game_date'].year, game.get('status', 'Final'),
                 game.get('home_score'), game.get('away_score'))
-            
+
+            # Fetch game details (box score, play-by-play, weather) for completed games
+            game_uuid = result['id']
+            game_id = str(game['game_pk'])
+
+            # Check if we already have box score data
+            has_box_score = await self.db_pool.fetchval("""
+                SELECT EXISTS(
+                    SELECT 1 FROM game_box_score_batting WHERE game_id = $1 LIMIT 1
+                )
+            """, game_uuid)
+
+            if not has_box_score:
+                logger.info(f"Fetching details for game {game_id}")
+                try:
+                    await self.game_details_fetcher.fetch_game_details(game_id, game_uuid)
+                except Exception as e:
+                    logger.error(f"Failed to fetch game details for {game_id}: {e}")
+
         except Exception as e:
             logger.error(f"Failed to save game {game.get('game_pk')}: {e}")
     

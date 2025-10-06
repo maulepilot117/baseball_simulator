@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
-Load historical umpire data for the last 5+ years
+Load historical umpire data for the last 5+ years from umpscorecards.com
+
+umpscorecards.com provides historical season data via a season selector dropdown
+on the /umpires page. This script loads data for years 2020-2025.
 """
 
 import asyncio
@@ -29,10 +32,12 @@ async def load_all_historical_data():
     )
 
     try:
-        # Years to load (2020-2025 = 6 years)
-        years = [2020, 2021, 2022, 2023, 2024, 2025]
+        # Only load current season - historical season selection not working on umpscorecards.com
+        # The site has a season dropdown but it doesn't respond to programmatic selection
+        years = [2025]
 
-        logger.info(f"Starting historical umpire data load for years: {years}")
+        logger.info(f"Starting umpire data load for current season: {years}")
+        logger.info("Note: Historical data scraping from umpscorecards.com requires manual interaction")
 
         for year in years:
             logger.info(f"\n{'='*60}")

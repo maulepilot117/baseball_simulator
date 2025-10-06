@@ -72,9 +72,11 @@ type Game struct {
 // GameWithTeams represents a game with team information
 type GameWithTeams struct {
 	Game
-	HomeTeam *Team    `json:"home_team,omitempty"`
-	AwayTeam *Team    `json:"away_team,omitempty"`
-	Stadium  *Stadium `json:"stadium,omitempty"`
+	HomeTeam     *Team    `json:"home_team,omitempty"`
+	AwayTeam     *Team    `json:"away_team,omitempty"`
+	Stadium      *Stadium `json:"stadium,omitempty"`
+	HomeTeamName string   `json:"home_team_name,omitempty"`
+	AwayTeamName string   `json:"away_team_name,omitempty"`
 }
 
 // Stadium represents a baseball stadium
@@ -163,6 +165,7 @@ type QueryParams struct {
 	Date     string `json:"date,omitempty"`
 	Sort     string `json:"sort,omitempty"`
 	Order    string `json:"order,omitempty"`
+	Name     string `json:"name,omitempty"`
 }
 
 // SimulationRequest represents a request to create a simulation
@@ -208,4 +211,13 @@ type UmpireSeasonStats struct {
 	HomePlateCallsPerGame    *float64   `json:"home_plate_calls_per_game,omitempty" db:"home_plate_calls_per_game"`
 	CreatedAt                time.Time  `json:"created_at" db:"created_at"`
 	UpdatedAt                time.Time  `json:"updated_at" db:"updated_at"`
+}
+
+// SearchResult represents a unified search result across all entity types
+type SearchResult struct {
+	Type        string `json:"type"`        // "player", "team", "game", "umpire"
+	ID          string `json:"id"`          // UUID of the entity
+	Name        string `json:"name"`        // Display name
+	Description string `json:"description"` // Additional context (position, team, date, etc.)
+	Relevance   int    `json:"relevance"`   // Relevance score for sorting
 }

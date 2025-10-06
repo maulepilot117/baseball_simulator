@@ -92,6 +92,44 @@ type SimulationResult struct {
 	KeyEvents        []GameEvent `json:"key_events"`
 	FinalState       GameState   `json:"final_state"`
 	CreatedAt        time.Time   `json:"created_at"`
+	PlayerStats      *GamePlayerStats `json:"player_stats,omitempty"`
+}
+
+// GamePlayerStats tracks player performance for a single simulated game
+type GamePlayerStats struct {
+	HomeBatting  map[string]*PlayerGameBatting  `json:"home_batting"`
+	AwayBatting  map[string]*PlayerGameBatting  `json:"away_batting"`
+	HomePitching map[string]*PlayerGamePitching `json:"home_pitching"`
+	AwayPitching map[string]*PlayerGamePitching `json:"away_pitching"`
+}
+
+// PlayerGameBatting tracks batting stats for one game
+type PlayerGameBatting struct {
+	PlayerID string
+	PA       int // Plate appearances
+	AB       int // At bats
+	H        int // Hits
+	Singles  int
+	Doubles  int
+	Triples  int
+	HR       int
+	RBI      int
+	R        int // Runs scored
+	BB       int
+	K        int
+}
+
+// PlayerGamePitching tracks pitching stats for one game
+type PlayerGamePitching struct {
+	PlayerID    string
+	Outs        int // Outs recorded (IP = Outs/3)
+	H           int // Hits allowed
+	R           int // Runs allowed
+	ER          int // Earned runs
+	BB          int
+	K           int
+	HR          int
+	Pitches     int
 }
 
 // AggregatedResult represents the combined results of all simulations
@@ -112,6 +150,58 @@ type AggregatedResult struct {
 	AveragePitches        float64            `json:"average_pitches"`
 	HighLeverageEvents    []GameEvent        `json:"high_leverage_events"`
 	Statistics            map[string]float64 `json:"statistics"`
+	PlayerPerformance     *AggregatedPlayerPerformance `json:"player_performance,omitempty"`
+}
+
+// AggregatedPlayerPerformance contains averaged player statistics across all simulations
+type AggregatedPlayerPerformance struct {
+	HomeTeam TeamPerformance `json:"home_team"`
+	AwayTeam TeamPerformance `json:"away_team"`
+}
+
+// TeamPerformance contains batting and pitching stats for a team
+type TeamPerformance struct {
+	TeamID   string                       `json:"team_id"`
+	TeamName string                       `json:"team_name"`
+	Batting  map[string]PlayerBattingStats `json:"batting"` // keyed by player ID
+	Pitching map[string]PlayerPitchingStats `json:"pitching"` // keyed by player ID
+}
+
+// PlayerBattingStats represents average batting performance across simulations
+type PlayerBattingStats struct {
+	PlayerID   string  `json:"player_id"`
+	PlayerName string  `json:"player_name"`
+	Position   string  `json:"position"`
+	PA         float64 `json:"pa"`   // Plate appearances (avg per game)
+	AB         float64 `json:"ab"`   // At bats
+	H          float64 `json:"h"`    // Hits
+	Singles    float64 `json:"1b"`   // Singles
+	Doubles    float64 `json:"2b"`   // Doubles
+	Triples    float64 `json:"3b"`   // Triples
+	HR         float64 `json:"hr"`   // Home runs
+	RBI        float64 `json:"rbi"`  // Runs batted in
+	R          float64 `json:"r"`    // Runs scored
+	BB         float64 `json:"bb"`   // Walks
+	K          float64 `json:"k"`    // Strikeouts
+	AVG        float64 `json:"avg"`  // Batting average (H/AB)
+	OBP        float64 `json:"obp"`  // On-base percentage
+	SLG        float64 `json:"slg"`  // Slugging percentage
+}
+
+// PlayerPitchingStats represents average pitching performance across simulations
+type PlayerPitchingStats struct {
+	PlayerID    string  `json:"player_id"`
+	PlayerName  string  `json:"player_name"`
+	IP          float64 `json:"ip"`   // Innings pitched
+	H           float64 `json:"h"`    // Hits allowed
+	R           float64 `json:"r"`    // Runs allowed
+	ER          float64 `json:"er"`   // Earned runs
+	BB          float64 `json:"bb"`   // Walks allowed
+	K           float64 `json:"k"`    // Strikeouts
+	HR          float64 `json:"hr"`   // Home runs allowed
+	Pitches     float64 `json:"pitches"` // Total pitches
+	ERA         float64 `json:"era"`  // Earned run average
+	WHIP        float64 `json:"whip"` // Walks + Hits per inning pitched
 }
 
 // NewGameState creates a new game state for simulation

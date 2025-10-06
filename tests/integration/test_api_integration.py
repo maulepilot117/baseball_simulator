@@ -113,6 +113,120 @@ class TestAPIGatewayIntegration:
         # Check if response was compressed
         assert response.headers.get("Content-Encoding") == "gzip" or len(response.content) > 0
 
+    @pytest.mark.asyncio
+    async def test_search_endpoint(self, http_client):
+        """Test universal search endpoint"""
+        response = await http_client.get(f"{BASE_URL_API_GATEWAY}/api/v1/search?q=test")
+        assert response.status_code == 200
+        data = response.json()
+        assert isinstance(data, list)
+
+    @pytest.mark.asyncio
+    async def test_search_validation(self, http_client):
+        """Test search query validation"""
+        # Empty query
+        response = await http_client.get(f"{BASE_URL_API_GATEWAY}/api/v1/search?q=")
+        assert response.status_code == 400
+
+        # Too short query
+        response = await http_client.get(f"{BASE_URL_API_GATEWAY}/api/v1/search?q=a")
+        assert response.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_team_stats_endpoint(self, http_client):
+        """Test team statistics endpoint"""
+        # Get a team first
+        teams_response = await http_client.get(f"{BASE_URL_API_GATEWAY}/api/v1/teams")
+        teams = teams_response.json()['data']
+
+        if len(teams) > 0:
+            team_id = teams[0]['id']
+            # Get team stats
+            stats_response = await http_client.get(
+                f"{BASE_URL_API_GATEWAY}/api/v1/teams/{team_id}/stats?season=2024"
+            )
+            assert stats_response.status_code in [200, 404]
+
+            if stats_response.status_code == 200:
+                data = stats_response.json()
+                assert 'wins' in data or 'season' in data
+
+    @pytest.mark.asyncio
+    async def test_team_games_endpoint(self, http_client):
+        """Test team games endpoint"""
+        # Get a team first
+        teams_response = await http_client.get(f"{BASE_URL_API_GATEWAY}/api/v1/teams")
+        teams = teams_response.json()['data']
+
+        if len(teams) > 0:
+            team_id = teams[0]['id']
+            # Get team games
+            games_response = await http_client.get(
+                f"{BASE_URL_API_GATEWAY}/api/v1/teams/{team_id}/games?season=2024"
+            )
+            assert games_response.status_code in [200, 404]
+
+    @pytest.mark.asyncio
+    async def test_game_boxscore_endpoint(self, http_client):
+        """Test game box score endpoint"""
+        # Get a game first
+        games_response = await http_client.get(f"{BASE_URL_API_GATEWAY}/api/v1/games?page=1&page_size=5")
+        games = games_response.json()
+
+        if 'data' in games and len(games['data']) > 0:
+            game_id = games['data'][0]['id']
+            # Get box score
+            boxscore_response = await http_client.get(
+                f"{BASE_URL_API_GATEWAY}/api/v1/games/{game_id}/boxscore"
+            )
+            assert boxscore_response.status_code in [200, 404]
+
+            if boxscore_response.status_code == 200:
+                data = boxscore_response.json()
+                # Box score should have these keys
+                assert 'home_team_batting' in data
+                assert 'away_team_batting' in data
+                assert 'home_team_pitching' in data
+                assert 'away_team_pitching' in data
+
+    @pytest.mark.asyncio
+    async def test_game_plays_endpoint(self, http_client):
+        """Test game plays endpoint"""
+        # Get a game first
+        games_response = await http_client.get(f"{BASE_URL_API_GATEWAY}/api/v1/games?page=1&page_size=5")
+        games = games_response.json()
+
+        if 'data' in games and len(games['data']) > 0:
+            game_id = games['data'][0]['id']
+            # Get plays
+            plays_response = await http_client.get(
+                f"{BASE_URL_API_GATEWAY}/api/v1/games/{game_id}/plays"
+            )
+            assert plays_response.status_code in [200, 404]
+
+            if plays_response.status_code == 200:
+                data = plays_response.json()
+                assert isinstance(data, list)
+
+    @pytest.mark.asyncio
+    async def test_game_weather_endpoint(self, http_client):
+        """Test game weather endpoint"""
+        # Get a game first
+        games_response = await http_client.get(f"{BASE_URL_API_GATEWAY}/api/v1/games?page=1&page_size=5")
+        games = games_response.json()
+
+        if 'data' in games and len(games['data']) > 0:
+            game_id = games['data'][0]['id']
+            # Get weather
+            weather_response = await http_client.get(
+                f"{BASE_URL_API_GATEWAY}/api/v1/games/{game_id}/weather"
+            )
+            assert weather_response.status_code in [200, 404]
+
+            if weather_response.status_code == 200:
+                data = weather_response.json()
+                assert isinstance(data, dict)
+
 
 class TestDataFetcherIntegration:
     """Integration tests for Data Fetcher"""

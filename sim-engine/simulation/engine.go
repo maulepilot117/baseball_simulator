@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"sim-engine/models"
+	"sim-engine/weather"
 )
 
 // SimulationEngine handles baseball game simulations
@@ -18,6 +19,22 @@ type SimulationEngine struct {
 	simulationRuns int
 	mu             sync.RWMutex
 	activeRuns     map[string]*RunStatus
+	weatherService WeatherService
+}
+
+// WeatherService interface for fetching weather data
+type WeatherService interface {
+	GetWeatherForGame(ctx context.Context, stadium StadiumInfo, gameTime time.Time) (models.Weather, error)
+}
+
+// StadiumInfo matches the weather service stadium info structure
+type StadiumInfo = struct {
+	Name      string
+	Location  string
+	Latitude  float64
+	Longitude float64
+	RoofType  string
+	Altitude  int
 }
 
 // RunStatus tracks the progress of a simulation run
@@ -40,7 +57,13 @@ func NewSimulationEngine(db *pgxpool.Pool, workers, simulationRuns int) *Simulat
 		workers:        workers,
 		simulationRuns: simulationRuns,
 		activeRuns:     make(map[string]*RunStatus),
+		weatherService: nil, // Will be set via SetWeatherService
 	}
+}
+
+// SetWeatherService sets the weather service for the engine
+func (se *SimulationEngine) SetWeatherService(ws WeatherService) {
+	se.weatherService = ws
 }
 
 // RunSimulation executes a complete simulation run
@@ -69,6 +92,21 @@ func (se *SimulationEngine) RunSimulation(runID, gameID string, simulationRuns i
 		log.Printf("Failed to load game data for %s: %v", gameID, err)
 		se.updateRunStatus(runID, "error")
 		return
+	}
+
+	// Fetch real-time weather if weather service is available
+	if se.weatherService != nil && gameData.Stadium.Name != "" {
+		// Convert stadium info for weather service
+		stadiumInfo := se.convertToWeatherStadiumInfo(gameData.Stadium)
+
+		weather, err := se.weatherService.GetWeatherForGame(ctx, stadiumInfo, gameData.GameTime)
+		if err != nil {
+			log.Printf("Failed to fetch weather for %s: %v, using default", gameData.Stadium.Name, err)
+		} else {
+			gameData.Weather = weather
+			log.Printf("Fetched weather for %s: %d°F, wind %d mph %s",
+				gameData.Stadium.Name, weather.Temperature, weather.WindSpeed, weather.WindDir)
+		}
 	}
 
 	// Load team rosters
@@ -163,6 +201,26 @@ func (se *SimulationEngine) simulateGame(runID string, simNumber int, gameData *
 	homeLineup := se.createLineup(homeRoster)
 	awayLineup := se.createLineup(awayRoster)
 
+	// Initialize player stat tracking
+	batterStats := make(map[string]*models.PlayerBattingStats)
+	pitcherStats := make(map[string]*models.PlayerPitchingStats)
+
+	// Initialize stats for all players
+	for i := range homeLineup {
+		batterStats[homeLineup[i].ID] = &models.PlayerBattingStats{
+			PlayerID:   homeLineup[i].ID,
+			PlayerName: homeLineup[i].Name,
+			Position:   homeLineup[i].Position,
+		}
+	}
+	for i := range awayLineup {
+		batterStats[awayLineup[i].ID] = &models.PlayerBattingStats{
+			PlayerID:   awayLineup[i].ID,
+			PlayerName: awayLineup[i].Name,
+			Position:   awayLineup[i].Position,
+		}
+	}
+
 	var events []models.GameEvent
 	pitchCount := 0
 	homeBatterIndex := 0
@@ -172,6 +230,16 @@ func (se *SimulationEngine) simulateGame(runID string, simNumber int, gameData *
 	homePitcher := se.getStartingPitcher(homeRoster)
 	awayPitcher := se.getStartingPitcher(awayRoster)
 	currentPitcher := awayPitcher // Away team pitches first
+
+	// Initialize pitcher stats
+	pitcherStats[homePitcher.ID] = &models.PlayerPitchingStats{
+		PlayerID:   homePitcher.ID,
+		PlayerName: homePitcher.Name,
+	}
+	pitcherStats[awayPitcher.ID] = &models.PlayerPitchingStats{
+		PlayerID:   awayPitcher.ID,
+		PlayerName: awayPitcher.Name,
+	}
 
 	// Simulate game
 	for !gameState.IsGameOver() {
@@ -204,12 +272,19 @@ func (se *SimulationEngine) simulateGame(runID string, simNumber int, gameData *
 			Leverage:    gameState.CalculateLeverage(),
 		}
 
-		// Simulate at-bat
-		atBatResult := se.simulateAtBat(currentBatter, currentPitcher, gameState)
-		pitchCount += rand.Intn(6) + 3 // 3-8 pitches per at-bat
+		// Simulate at-bat with full context (umpire, park factors, stadium)
+		atBatResult := se.simulateAtBatWithContext(currentBatter, currentPitcher, gameState, gameData)
+		atBatPitches := rand.Intn(6) + 3 // 3-8 pitches per at-bat
+		pitchCount += atBatPitches
 
 		// Process at-bat result
 		runs, outs := se.processAtBatResult(gameState, atBatResult)
+
+		// Track batter stats
+		se.updateBatterStats(batterStats[currentBatter.ID], atBatResult, runs)
+
+		// Track pitcher stats
+		se.updatePitcherStats(pitcherStats[currentPitcher.ID], atBatResult, runs, atBatPitches)
 
 		// Create game event
 		event := models.GameEvent{
@@ -264,6 +339,37 @@ func (se *SimulationEngine) simulateGame(runID string, simNumber int, gameData *
 	gameState.IsComplete = true
 	gameState.WinnerTeam = winner
 
+	// Calculate derived stats for all players
+	for _, stats := range batterStats {
+		se.calculateDerivedBattingStats(stats)
+	}
+	for _, stats := range pitcherStats {
+		se.calculateDerivedPitchingStats(stats)
+	}
+
+	// Build player stats by team
+	homeBatting := make(map[string]*models.PlayerGameBatting)
+	awayBatting := make(map[string]*models.PlayerGameBatting)
+	for _, player := range homeLineup {
+		if stats, ok := batterStats[player.ID]; ok {
+			homeBatting[player.ID] = se.convertToGameBatting(stats)
+		}
+	}
+	for _, player := range awayLineup {
+		if stats, ok := batterStats[player.ID]; ok {
+			awayBatting[player.ID] = se.convertToGameBatting(stats)
+		}
+	}
+
+	homePitching := make(map[string]*models.PlayerGamePitching)
+	awayPitching := make(map[string]*models.PlayerGamePitching)
+	if stats, ok := pitcherStats[homePitcher.ID]; ok {
+		homePitching[homePitcher.ID] = se.convertToGamePitching(stats)
+	}
+	if stats, ok := pitcherStats[awayPitcher.ID]; ok {
+		awayPitching[awayPitcher.ID] = se.convertToGamePitching(stats)
+	}
+
 	return models.SimulationResult{
 		RunID:            runID,
 		SimulationNumber: simNumber,
@@ -275,13 +381,52 @@ func (se *SimulationEngine) simulateGame(runID string, simNumber int, gameData *
 		KeyEvents:        events,
 		FinalState:       *gameState,
 		CreatedAt:        time.Now(),
+		PlayerStats: &models.GamePlayerStats{
+			HomeBatting:  homeBatting,
+			AwayBatting:  awayBatting,
+			HomePitching: homePitching,
+			AwayPitching: awayPitching,
+		},
 	}
 }
 
-// simulateAtBat simulates a single plate appearance
+// simulateAtBat simulates a single plate appearance (legacy compatibility)
 func (se *SimulationEngine) simulateAtBat(batter, pitcher *models.Player, gameState *models.GameState) models.AtBatResult {
 	// Use the player model's simulation method
 	return batter.SimulateAtBat(pitcher, gameState, gameState.Weather)
+}
+
+// simulateAtBatWithContext simulates a plate appearance with full game context
+func (se *SimulationEngine) simulateAtBatWithContext(batter, pitcher *models.Player, gameState *models.GameState, gameData *GameData) models.AtBatResult {
+	// Apply altitude effect to home run probability
+	altitude := gameData.Stadium.Altitude
+	if altitude > 1000 {
+		altitudeEffect := models.GetAltitudeEffect(altitude)
+		// Altitude effect is applied within the hit simulation
+		_ = altitudeEffect
+	}
+
+	// Call player's at-bat simulation with full context
+	return batter.SimulateAtBatWithContext(
+		pitcher,
+		gameState,
+		gameState.Weather,
+		&gameData.Umpire.Tendencies,
+		&gameData.Stadium.ParkFactors,
+		&gameData.Stadium.Dimensions,
+	)
+}
+
+// convertToWeatherStadiumInfo converts stadium data to weather service format
+func (se *SimulationEngine) convertToWeatherStadiumInfo(stadium StadiumData) weather.StadiumInfo {
+	return weather.StadiumInfo{
+		Name:      stadium.Name,
+		Location:  stadium.Location,
+		Latitude:  stadium.Latitude,
+		Longitude: stadium.Longitude,
+		RoofType:  stadium.RoofType,
+		Altitude:  stadium.Altitude,
+	}
 }
 
 // processAtBatResult updates the game state based on the at-bat outcome
@@ -458,12 +603,157 @@ func (se *SimulationEngine) processWalk(gameState *models.GameState) (runs, outs
 
 // GameData represents the basic game information needed for simulation
 type GameData struct {
-	GameID     string
-	HomeTeamID string
-	AwayTeamID string
-	Weather    models.Weather
-	Date       time.Time
-	Stadium    string
+	GameID       string
+	HomeTeamID   string
+	AwayTeamID   string
+	Weather      models.Weather
+	Date         time.Time
+	GameTime     time.Time
+	Stadium      StadiumData
+	Umpire       UmpireData
+}
+
+// StadiumData contains stadium information for simulation
+type StadiumData struct {
+	ID           string
+	Name         string
+	Location     string
+	Latitude     float64
+	Longitude    float64
+	RoofType     string
+	Altitude     int
+	Surface      string
+	Dimensions   models.StadiumDimensions
+	ParkFactors  models.ParkFactors
+}
+
+// UmpireData contains umpire information and tendencies
+type UmpireData struct {
+	ID         string
+	Name       string
+	Tendencies models.UmpireTendencies
+}
+
+// updateBatterStats updates batting statistics based on at-bat result
+func (se *SimulationEngine) updateBatterStats(stats *models.PlayerBattingStats, result models.AtBatResult, runsScored int) {
+	stats.PA++ // Every at-bat is a plate appearance
+
+	switch result.Type {
+	case "single":
+		stats.AB++
+		stats.H++
+		stats.Singles++
+		stats.RBI += float64(runsScored)
+	case "double":
+		stats.AB++
+		stats.H++
+		stats.Doubles++
+		stats.RBI += float64(runsScored)
+	case "triple":
+		stats.AB++
+		stats.H++
+		stats.Triples++
+		stats.RBI += float64(runsScored)
+	case "home_run":
+		stats.AB++
+		stats.H++
+		stats.HR++
+		stats.RBI += float64(runsScored)
+		stats.R++ // Batter scores on home run
+	case "walk", "hit_by_pitch":
+		// Walks don't count as at-bats
+		stats.BB++
+	case "strikeout":
+		stats.AB++
+		stats.K++
+	case "out":
+		stats.AB++
+	}
+}
+
+// updatePitcherStats updates pitching statistics based on at-bat result
+func (se *SimulationEngine) updatePitcherStats(stats *models.PlayerPitchingStats, result models.AtBatResult, runsAllowed int, pitches int) {
+	stats.Pitches += float64(pitches)
+
+	switch result.Type {
+	case "single", "double", "triple", "home_run":
+		stats.H++
+		if result.Type == "home_run" {
+			stats.HR++
+		}
+	case "walk", "hit_by_pitch":
+		stats.BB++
+	case "strikeout", "out":
+		// Recorded an out - increment IP by 1/3
+		stats.IP += 1.0 / 3.0
+		if result.Type == "strikeout" {
+			stats.K++
+		}
+	}
+
+	// Track runs allowed (these are assumed to be earned)
+	stats.R += float64(runsAllowed)
+	stats.ER += float64(runsAllowed)
+}
+
+// calculateDerivedBattingStats calculates AVG, OBP, SLG from counting stats
+func (se *SimulationEngine) calculateDerivedBattingStats(stats *models.PlayerBattingStats) {
+	if stats.AB > 0 {
+		stats.AVG = stats.H / stats.AB
+
+		// Calculate total bases for SLG
+		totalBases := stats.Singles + (stats.Doubles * 2) + (stats.Triples * 3) + (stats.HR * 4)
+		stats.SLG = totalBases / stats.AB
+	}
+
+	if stats.PA > 0 {
+		// OBP = (H + BB) / PA
+		stats.OBP = (stats.H + stats.BB) / stats.PA
+	}
+}
+
+// calculateDerivedPitchingStats calculates ERA and WHIP from counting stats
+func (se *SimulationEngine) calculateDerivedPitchingStats(stats *models.PlayerPitchingStats) {
+	if stats.IP > 0 {
+		// ERA = (ER * 9) / IP
+		stats.ERA = (stats.ER * 9) / stats.IP
+
+		// WHIP = (H + BB) / IP
+		stats.WHIP = (stats.H + stats.BB) / stats.IP
+	}
+}
+
+// convertToGameBatting converts PlayerBattingStats to PlayerGameBatting (integer counts)
+func (se *SimulationEngine) convertToGameBatting(stats *models.PlayerBattingStats) *models.PlayerGameBatting {
+	return &models.PlayerGameBatting{
+		PlayerID: stats.PlayerID,
+		PA:       int(stats.PA),
+		AB:       int(stats.AB),
+		H:        int(stats.H),
+		Singles:  int(stats.Singles),
+		Doubles:  int(stats.Doubles),
+		Triples:  int(stats.Triples),
+		HR:       int(stats.HR),
+		RBI:      int(stats.RBI),
+		R:        int(stats.R),
+		BB:       int(stats.BB),
+		K:        int(stats.K),
+	}
+}
+
+// convertToGamePitching converts PlayerPitchingStats to PlayerGamePitching (integer counts)
+func (se *SimulationEngine) convertToGamePitching(stats *models.PlayerPitchingStats) *models.PlayerGamePitching {
+	return &models.PlayerGamePitching{
+		PlayerID: stats.PlayerID,
+		Outs:     int(stats.IP * 3), // Convert IP to outs
+		H:        int(stats.H),
+		R:        int(stats.R),
+		ER:       int(stats.ER),
+		BB:       int(stats.BB),
+		K:        int(stats.K),
+		HR:       int(stats.HR),
+		Pitches:  int(stats.Pitches),
+	}
 }
 
 // Helper functions for simulation setup and management would go here

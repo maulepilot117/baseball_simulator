@@ -16,7 +16,11 @@ services:
     networks:
       - baseball-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-baseball_user} -d ${DB_NAME:-baseball_sim}"]
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${DB_USER:-baseball_user} -d ${DB_NAME:-baseball_sim}",
+        ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -73,10 +77,10 @@ services:
       resources:
         limits:
           memory: 512M
-          cpus: '0.5'
+          cpus: "0.5"
         reservations:
           memory: 256M
-          cpus: '0.25'
+          cpus: "0.25"
 
   # Simulation Engine Service (Go)
   sim-engine:
@@ -93,6 +97,7 @@ services:
       - PORT=8081
       - WORKERS=${SIM_WORKERS:-4}
       - SIMULATION_RUNS=${SIMULATION_RUNS:-1000}
+      - OPENWEATHER_API_KEY=4ab6387131a632bf6950df5033a9986c
     ports:
       - "${SIM_ENGINE_PORT:-8081}:8081"
     networks:
@@ -107,10 +112,10 @@ services:
       resources:
         limits:
           memory: 1G
-          cpus: '1.0'
+          cpus: "1.0"
         reservations:
           memory: 512M
-          cpus: '0.5'
+          cpus: "0.5"
 
   # API Gateway Service (Go)
   api-gateway:
@@ -146,10 +151,10 @@ services:
       resources:
         limits:
           memory: 512M
-          cpus: '0.5'
+          cpus: "0.5"
         reservations:
           memory: 256M
-          cpus: '0.25'
+          cpus: "0.25"
 
   # Frontend Service (Fresh/Deno)
   frontend:
@@ -160,6 +165,7 @@ services:
     environment:
       - API_BASE_URL=http://api-gateway:8080/api/v1
       - DATA_FETCHER_URL=http://data-fetcher:8082
+      - SIM_ENGINE_URL=http://sim-engine:8081
     ports:
       - "${FRONTEND_PORT:-3000}:8000"
     networks:
@@ -171,10 +177,10 @@ services:
       resources:
         limits:
           memory: 512M
-          cpus: '0.5'
+          cpus: "0.5"
         reservations:
           memory: 256M
-          cpus: '0.25'
+          cpus: "0.25"
 
   # Redis for caching and session management
   redis:
@@ -197,22 +203,22 @@ services:
       resources:
         limits:
           memory: 256M
-          cpus: '0.25'
+          cpus: "0.25"
         reservations:
           memory: 128M
-          cpus: '0.1'
+          cpus: "0.1"
 
   # Prometheus for monitoring
   prometheus:
     image: prom/prometheus:latest
     container_name: baseball-prometheus
     command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/etc/prometheus/console_libraries'
-      - '--web.console.templates=/etc/prometheus/consoles'
-      - '--storage.tsdb.retention.time=200h'
-      - '--web.enable-lifecycle'
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.console.libraries=/etc/prometheus/console_libraries"
+      - "--web.console.templates=/etc/prometheus/consoles"
+      - "--storage.tsdb.retention.time=200h"
+      - "--web.enable-lifecycle"
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus_data:/prometheus
@@ -225,10 +231,10 @@ services:
       resources:
         limits:
           memory: 512M
-          cpus: '0.5'
+          cpus: "0.5"
         reservations:
           memory: 256M
-          cpus: '0.25'
+          cpus: "0.25"
 
   # Grafana for visualization
   grafana:
@@ -252,10 +258,10 @@ services:
       resources:
         limits:
           memory: 256M
-          cpus: '0.25'
+          cpus: "0.25"
         reservations:
           memory: 128M
-          cpus: '0.1'
+          cpus: "0.1"
 
 # Named volumes for data persistence
 volumes:

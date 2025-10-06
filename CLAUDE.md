@@ -54,7 +54,7 @@ This is a microservices-based baseball simulation system with the following comp
 - Optimized connection pooling across services
 
 ### Key Technologies
-- **Go 1.24**: Gorilla Mux for routing, pgx for PostgreSQL connectivity
+- **Go 1.25**: Gorilla Mux for routing, pgx for PostgreSQL connectivity
 - **Python 3.13**: FastAPI for async HTTP, asyncpg for database access
 - **Deno 2.1**: Modern TypeScript/JavaScript runtime for frontend
 - **Node.js 22**: LTS version for build tools and compatibility
@@ -65,10 +65,20 @@ This is a microservices-based baseball simulation system with the following comp
 
 ### API Gateway (http://localhost:8080/api/v1)
 - `GET /health` - Service health check
+- `GET /search?q={query}` - Search across all entities (players, teams, games, umpires)
 - `GET /teams` - List all teams
-- `GET /players` - List all players
-- `GET /games` - List games
+- `GET /teams/{id}` - Get specific team details
+- `GET /teams/{id}/stats?season={year}` - Get team statistics (W-L record, runs scored/allowed)
+- `GET /teams/{id}/games?season={year}` - Get team's games with pagination
+- `GET /players` - List all players (supports filters: team, position, status, name)
+- `GET /players/{id}` - Get specific player details
+- `GET /players/{id}/stats` - Get player statistics
+- `GET /games` - List games (supports filters: season, team, status, date)
+- `GET /games/{id}` - Get specific game details
 - `GET /games/date/{date}` - Games by date
+- `GET /umpires` - List all umpires
+- `GET /umpires/{id}` - Get specific umpire details
+- `GET /umpires/{id}/stats` - Get umpire statistics
 - `GET /simulations` - List past simulations
 - `GET /simulations/{id}` - Get specific simulation result
 

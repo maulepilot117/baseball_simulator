@@ -40,6 +40,7 @@ func parseQueryParams(r *http.Request) QueryParams {
 	params.Date = r.URL.Query().Get("date")
 	params.Sort = r.URL.Query().Get("sort")
 	params.Order = r.URL.Query().Get("order")
+	params.Name = r.URL.Query().Get("name")
 
 	// Default order to ASC if not specified
 	if params.Order != "desc" {
@@ -304,6 +305,13 @@ func buildPlayersWhereClause(params QueryParams) (string, []interface{}) {
 	var args []interface{}
 	argIndex := 1
 
+	if params.Name != "" {
+		// Search by full_name, first_name, or last_name using case-insensitive ILIKE
+		conditions = append(conditions, "(p.full_name ILIKE $"+strconv.Itoa(argIndex)+" OR p.first_name ILIKE $"+strconv.Itoa(argIndex)+" OR p.last_name ILIKE $"+strconv.Itoa(argIndex)+")")
+		args = append(args, "%"+params.Name+"%")
+		argIndex++
+	}
+
 	if params.Position != "" && isValidPosition(params.Position) {
 		conditions = append(conditions, "p.position = $"+strconv.Itoa(argIndex))
 		args = append(args, params.Position)
@@ -311,7 +319,7 @@ func buildPlayersWhereClause(params QueryParams) (string, []interface{}) {
 	}
 
 	if params.Team != "" {
-		conditions = append(conditions, "(t.id = $"+strconv.Itoa(argIndex)+" OR t.team_id = $"+strconv.Itoa(argIndex)+" OR t.abbreviation = $"+strconv.Itoa(argIndex)+")")
+		conditions = append(conditions, "(t.id::text = $"+strconv.Itoa(argIndex)+" OR t.team_id = $"+strconv.Itoa(argIndex)+" OR UPPER(t.abbreviation) = UPPER($"+strconv.Itoa(argIndex)+"))")
 		args = append(args, params.Team)
 		argIndex++
 	}
@@ -343,7 +351,7 @@ func buildGamesWhereClause(params QueryParams) (string, []interface{}) {
 	}
 
 	if params.Team != "" {
-		conditions = append(conditions, "(ht.id = $"+strconv.Itoa(argIndex)+" OR ht.team_id = $"+strconv.Itoa(argIndex)+" OR ht.abbreviation = $"+strconv.Itoa(argIndex)+" OR at.id = $"+strconv.Itoa(argIndex)+" OR at.team_id = $"+strconv.Itoa(argIndex)+" OR at.abbreviation = $"+strconv.Itoa(argIndex)+")")
+		conditions = append(conditions, "(ht.id::text = $"+strconv.Itoa(argIndex)+" OR ht.team_id = $"+strconv.Itoa(argIndex)+" OR UPPER(ht.abbreviation) = UPPER($"+strconv.Itoa(argIndex)+") OR at.id::text = $"+strconv.Itoa(argIndex)+" OR at.team_id = $"+strconv.Itoa(argIndex)+" OR UPPER(at.abbreviation) = UPPER($"+strconv.Itoa(argIndex)+"))")
 		args = append(args, params.Team)
 		argIndex++
 	}

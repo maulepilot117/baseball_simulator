@@ -1,6 +1,10 @@
 """
 Umpire Scorecard Data Scraper using Playwright
 Scrapes umpire performance data from umpscorecards.com
+
+The site provides historical data via a season selector dropdown.
+This scraper can fetch data for seasons 2016-2025 by selecting
+the appropriate season from the dropdown before scraping.
 """
 import asyncio
 import logging
@@ -47,9 +51,8 @@ class UmpireScraper:
         if season is None:
             return self.UMPIRES_URL
 
-        # Try different URL patterns that sports sites commonly use
-        # We'll try the first one that loads successfully
-        return self.UMPIRES_URL  # For now, use base URL with season filter
+        # umpscorecards.com uses query parameters for season filtering
+        return f"{self.UMPIRES_URL}?season={season}"
 
     async def scrape_umpire_data(self, season: Optional[int] = None) -> List[UmpireMetrics]:
         """
@@ -71,10 +74,12 @@ class UmpireScraper:
                     )
                     page = await context.new_page()
 
-                    logger.info(f"Navigating to {self.UMPIRES_URL}")
+                    # Get the season-specific URL
+                    url = self.get_season_url(season)
+                    logger.info(f"Navigating to {url}")
 
                     # Navigate to umpires page (use longer timeout and domcontentloaded instead of networkidle)
-                    await page.goto(self.UMPIRES_URL, wait_until='domcontentloaded', timeout=60000)
+                    await page.goto(url, wait_until='domcontentloaded', timeout=60000)
 
                     # Wait for content to load
                     try:
@@ -83,87 +88,34 @@ class UmpireScraper:
                         logger.warning("Timeout waiting for umpire data to load")
 
                     # Wait for page to fully render (longer wait for JS-heavy page)
-                    await page.wait_for_timeout(5000)
+                    await page.wait_for_timeout(6000)
 
-                    # First, try to set the season if specified
+                    # Season is already set via URL parameter, verify it loaded correctly
                     if season:
                         try:
-                            logger.info(f"Looking for season selector to set year to {season}")
+                            season_selector = 'select#season'
+                            selected_value = await page.eval_on_selector(
+                                season_selector,
+                                'el => el.value'
+                            )
+                            logger.info(f"Season loaded from URL: {selected_value} (expected: {season})")
 
-                            # Common season selector patterns
-                            season_selectors = [
-                                'select[name*="season" i]',
-                                'select[name*="year" i]',
-                                'select[id*="season" i]',
-                                'select[id*="year" i]',
-                                'select[aria-label*="season" i]',
-                                'select[aria-label*="year" i]',
-                            ]
-
-                            season_set = False
-                            for selector in season_selectors:
-                                try:
-                                    element = await page.query_selector(selector)
-                                    if element:
-                                        # Check if this select has year options
-                                        options = await page.query_selector_all(f'{selector} option')
-                                        for option in options:
-                                            option_text = await option.inner_text()
-                                            option_value = await option.get_attribute('value')
-                                            # Check if option contains the season year
-                                            if str(season) in option_text or str(season) in str(option_value):
-                                                logger.info(f"Found season selector: {selector}, setting to {season}")
-                                                await page.select_option(selector, option_value)
-                                                await page.wait_for_timeout(3000)  # Wait for data to reload
-                                                season_set = True
-                                                break
-                                        if season_set:
-                                            break
-                                except Exception as e:
-                                    logger.debug(f"Could not use season selector {selector}: {e}")
-                                    continue
-
-                            if not season_set:
-                                logger.warning(f"Could not find season selector for {season}, using default page data")
-
+                            if str(selected_value) != str(season):
+                                logger.warning(f"URL parameter didn't set season correctly, got {selected_value} instead of {season}")
                         except Exception as e:
-                            logger.warning(f"Error setting season: {e}")
+                            logger.debug(f"Could not verify season: {e}")
 
-                    # Now set page size to show all umpires
+                    # Now set page size to show all umpires (max is 100)
                     try:
-                        # Try to find and click page size dropdown/selector
-                        page_size_selectors = [
-                            'select[name="pageSize"]',
-                            'select[aria-label*="page"]',
-                            'select[aria-label*="rows"]',
-                            'button:has-text("100")',
-                            'button:has-text("200")',
-                            'a:has-text("Show all")',
-                            'button:has-text("All")',
-                        ]
-
-                        for selector in page_size_selectors:
-                            try:
-                                element = await page.query_selector(selector)
-                                if element:
-                                    logger.info(f"Found page size control: {selector}")
-                                    if 'select' in selector:
-                                        # Try to select the largest option
-                                        options = await page.query_selector_all(f'{selector} option')
-                                        if options:
-                                            # Get the last option (usually largest)
-                                            last_option_value = await options[-1].get_attribute('value')
-                                            await page.select_option(selector, last_option_value)
-                                            logger.info(f"Set page size to: {last_option_value}")
-                                            await page.wait_for_timeout(2000)
-                                            break
-                                    else:
-                                        await element.click()
-                                        await page.wait_for_timeout(2000)
-                                        break
-                            except Exception as e:
-                                logger.debug(f"Could not use selector {selector}: {e}")
-                                continue
+                        page_size_selector = 'select#pageSize'
+                        element = await page.query_selector(page_size_selector)
+                        if element:
+                            logger.info("Setting page size to 100...")
+                            await page.select_option(page_size_selector, '100')
+                            await page.wait_for_timeout(3000)  # Wait for data to reload
+                            logger.info("✓ Page size set to 100")
+                        else:
+                            logger.debug("Could not find page size selector")
 
                     except Exception as e:
                         logger.debug(f"Could not modify page size: {e}")

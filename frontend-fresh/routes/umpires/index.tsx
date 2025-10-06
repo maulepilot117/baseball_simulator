@@ -56,9 +56,6 @@ export default function UmpiresPage({ data }: PageProps<UmpiresPageData>) {
                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Name
                 </th>
-                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Tendencies
-                </th>
                 <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Actions
                 </th>
@@ -67,7 +64,7 @@ export default function UmpiresPage({ data }: PageProps<UmpiresPageData>) {
             <tbody class="bg-white divide-y divide-gray-200">
               {umpireList.length === 0 ? (
                 <tr>
-                  <td colspan="3" class="px-6 py-8 text-center text-gray-500">
+                  <td colspan="2" class="px-6 py-8 text-center text-gray-500">
                     No umpires found
                   </td>
                 </tr>
@@ -80,56 +77,12 @@ export default function UmpiresPage({ data }: PageProps<UmpiresPageData>) {
                         <div>
                           <a
                             href={`/umpires/${umpire.id}`}
-                            class="text-blue-600 hover:underline font-medium"
+                            class="text-blue-600 hover:underline font-medium text-lg"
                           >
-                            {umpire.full_name}
+                            {umpire.name}
                           </a>
-                          <div class="text-sm text-gray-500">
-                            ID: {umpire.umpire_id}
-                          </div>
                         </div>
                       </div>
-                    </td>
-                    <td class="px-6 py-4">
-                      {umpire.tendencies ? (
-                        <div class="space-y-1 text-sm">
-                          {umpire.tendencies.expand_zone !== undefined && (
-                            <div class="flex items-center gap-2">
-                              <span class="text-gray-500">Expand Zone:</span>
-                              <span class="font-medium">
-                                {(umpire.tendencies.expand_zone * 100).toFixed(1)}%
-                              </span>
-                            </div>
-                          )}
-                          {umpire.tendencies.favor_home !== undefined && (
-                            <div class="flex items-center gap-2">
-                              <span class="text-gray-500">Favor Home:</span>
-                              <span
-                                class={`font-medium ${
-                                  umpire.tendencies.favor_home > 0
-                                    ? "text-green-600"
-                                    : umpire.tendencies.favor_home < 0
-                                    ? "text-red-600"
-                                    : "text-gray-600"
-                                }`}
-                              >
-                                {umpire.tendencies.favor_home > 0 ? "+" : ""}
-                                {(umpire.tendencies.favor_home * 100).toFixed(1)}%
-                              </span>
-                            </div>
-                          )}
-                          {umpire.tendencies.consistency !== undefined && (
-                            <div class="flex items-center gap-2">
-                              <span class="text-gray-500">Consistency:</span>
-                              <span class="font-medium">
-                                {(umpire.tendencies.consistency * 100).toFixed(1)}%
-                              </span>
-                            </div>
-                          )}
-                        </div>
-                      ) : (
-                        <span class="text-gray-400 text-sm">No data</span>
-                      )}
                     </td>
                     <td class="px-6 py-4 whitespace-nowrap text-right">
                       <a

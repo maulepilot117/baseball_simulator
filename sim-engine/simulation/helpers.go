@@ -15,54 +15,188 @@ import (
 // loadGameData retrieves game information from the database
 func (se *SimulationEngine) loadGameData(ctx context.Context, gameID string) (*GameData, error) {
 	var gameData GameData
-	var weatherJSON []byte
+	var weatherJSON, dimensionsJSON, parkFactorsJSON, umpireTendenciesJSON []byte
+	var gameTime *time.Time
 
 	query := `
-		SELECT g.game_id, g.home_team_id, g.away_team_id, g.game_date, 
-		       g.weather_data, s.name as stadium_name
+		SELECT g.game_id, g.home_team_id, g.away_team_id, g.game_date, g.game_time,
+		       g.weather_data,
+		       s.id, s.name, s.location, s.latitude, s.longitude, s.altitude, s.surface, s.roof_type,
+		       s.dimensions, s.park_factors,
+		       u.id, u.name, u.tendencies
 		FROM games g
 		LEFT JOIN stadiums s ON g.stadium_id = s.id
+		LEFT JOIN umpires u ON g.home_plate_umpire_id = u.id
 		WHERE g.game_id = $1
 	`
+
+	var stadiumID, stadiumName, stadiumLocation, stadiumSurface, stadiumRoofType *string
+	var stadiumLatitude, stadiumLongitude *float64
+	var stadiumAltitude *int
+	var umpireID, umpireName *string
 
 	err := se.db.QueryRow(ctx, query, gameID).Scan(
 		&gameData.GameID,
 		&gameData.HomeTeamID,
 		&gameData.AwayTeamID,
 		&gameData.Date,
+		&gameTime,
 		&weatherJSON,
-		&gameData.Stadium,
+		&stadiumID,
+		&stadiumName,
+		&stadiumLocation,
+		&stadiumLatitude,
+		&stadiumLongitude,
+		&stadiumAltitude,
+		&stadiumSurface,
+		&stadiumRoofType,
+		&dimensionsJSON,
+		&parkFactorsJSON,
+		&umpireID,
+		&umpireName,
+		&umpireTendenciesJSON,
 	)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to load game data: %w", err)
 	}
 
-	// Parse weather data
+	// Set game time (combine date and time)
+	if gameTime != nil {
+		gameData.GameTime = time.Date(
+			gameData.Date.Year(),
+			gameData.Date.Month(),
+			gameData.Date.Day(),
+			gameTime.Hour(),
+			gameTime.Minute(),
+			gameTime.Second(),
+			0,
+			gameData.Date.Location(),
+		)
+	} else {
+		// Default to 7:00 PM if no time specified
+		gameData.GameTime = time.Date(
+			gameData.Date.Year(),
+			gameData.Date.Month(),
+			gameData.Date.Day(),
+			19, 0, 0, 0,
+			gameData.Date.Location(),
+		)
+	}
+
+	// Parse stadium data
+	if stadiumID != nil {
+		gameData.Stadium.ID = *stadiumID
+	}
+	if stadiumName != nil {
+		gameData.Stadium.Name = *stadiumName
+	}
+	if stadiumLocation != nil {
+		gameData.Stadium.Location = *stadiumLocation
+	}
+	if stadiumLatitude != nil {
+		gameData.Stadium.Latitude = *stadiumLatitude
+	}
+	if stadiumLongitude != nil {
+		gameData.Stadium.Longitude = *stadiumLongitude
+	}
+	if stadiumAltitude != nil {
+		gameData.Stadium.Altitude = *stadiumAltitude
+	}
+	if stadiumSurface != nil {
+		gameData.Stadium.Surface = *stadiumSurface
+	}
+	if stadiumRoofType != nil {
+		gameData.Stadium.RoofType = *stadiumRoofType
+	}
+
+	// Parse stadium dimensions
+	if len(dimensionsJSON) > 0 {
+		if err := json.Unmarshal(dimensionsJSON, &gameData.Stadium.Dimensions); err != nil {
+			log.Printf("Failed to parse stadium dimensions: %v", err)
+			gameData.Stadium.Dimensions = models.DefaultDimensions()
+		}
+	} else {
+		gameData.Stadium.Dimensions = models.DefaultDimensions()
+	}
+
+	// Parse park factors
+	if len(parkFactorsJSON) > 0 {
+		if err := json.Unmarshal(parkFactorsJSON, &gameData.Stadium.ParkFactors); err != nil {
+			log.Printf("Failed to parse park factors: %v", err)
+			gameData.Stadium.ParkFactors = models.DefaultParkFactors()
+		}
+	} else {
+		gameData.Stadium.ParkFactors = models.DefaultParkFactors()
+	}
+
+	// Coordinates are now loaded directly from the database query above (lines 98-103)
+	// No need to call getStadiumCoordinates anymore
+
+	// Parse umpire data
+	if umpireID != nil {
+		gameData.Umpire.ID = *umpireID
+	}
+	if umpireName != nil {
+		gameData.Umpire.Name = *umpireName
+	}
+
+	// Parse umpire tendencies
+	if len(umpireTendenciesJSON) > 0 {
+		if err := json.Unmarshal(umpireTendenciesJSON, &gameData.Umpire.Tendencies); err != nil {
+			log.Printf("Failed to parse umpire tendencies: %v", err)
+			gameData.Umpire.Tendencies = models.DefaultUmpireTendencies()
+		}
+	} else {
+		gameData.Umpire.Tendencies = models.DefaultUmpireTendencies()
+	}
+
+	// Parse stored weather data (if any)
 	if len(weatherJSON) > 0 {
 		if err := json.Unmarshal(weatherJSON, &gameData.Weather); err != nil {
 			log.Printf("Failed to parse weather data: %v", err)
-			// Use default weather
-			gameData.Weather = models.Weather{
-				Temperature: 72,
-				WindSpeed:   5,
-				WindDir:     "calm",
-				Humidity:    50,
-				Pressure:    29.92,
-			}
-		}
-	} else {
-		// Default weather conditions
-		gameData.Weather = models.Weather{
-			Temperature: 72,
-			WindSpeed:   5,
-			WindDir:     "calm",
-			Humidity:    50,
-			Pressure:    29.92,
+			// Will be fetched from weather service later
+			gameData.Weather = models.Weather{}
 		}
 	}
 
 	return &gameData, nil
+}
+
+// getStadiumCoordinates retrieves latitude and longitude for a stadium
+// This is a helper function that could be expanded to parse location strings
+// or look up coordinates from a separate table/geocoding service
+func (se *SimulationEngine) getStadiumCoordinates(ctx context.Context, stadiumID string) (lat, lon float64) {
+	// For now, we'll return 0, 0 which will trigger default weather
+	// In a production system, you'd either:
+	// 1. Store lat/lon in the stadiums table
+	// 2. Geocode the location string
+	// 3. Maintain a lookup table of stadium coordinates
+
+	// Quick lookup for major stadiums (can be expanded)
+	stadiumCoords := map[string][2]float64{
+		// Sample stadium coordinates - expand this as needed
+		"Yankee Stadium":    {40.8296, -73.9262},
+		"Fenway Park":       {42.3467, -71.0972},
+		"Wrigley Field":     {41.9484, -87.6553},
+		"Dodger Stadium":    {34.0739, -118.2400},
+		"Oracle Park":       {37.7786, -122.3893},
+		"Coors Field":       {39.7559, -104.9942},
+		"Petco Park":        {32.7073, -117.1566},
+		"T-Mobile Park":     {47.5914, -122.3325},
+		"Minute Maid Park":  {29.7573, -95.3555},
+		"Chase Field":       {33.4453, -112.0667},
+		"Busch Stadium":     {38.6226, -90.1928},
+		"Citizens Bank Park": {39.9061, -75.1665},
+	}
+
+	// Try to match by stadium ID or name
+	// This is a simplified approach - in production, store coordinates in DB
+	if coords, ok := stadiumCoords[stadiumID]; ok {
+		return coords[0], coords[1]
+	}
+
+	return 0, 0
 }
 
 // loadTeamRosters loads the rosters for both teams
@@ -84,10 +218,10 @@ func (se *SimulationEngine) loadTeamRosters(ctx context.Context, homeTeamID, awa
 func (se *SimulationEngine) loadTeamRoster(ctx context.Context, teamID string) (*models.Roster, error) {
 	// Load players for the team
 	playersQuery := `
-		SELECT p.id, p.player_id, p.first_name, p.last_name, p.position, 
+		SELECT p.id, p.player_id, p.first_name, p.last_name, p.position,
 		       p.bats, p.throws, p.birth_date
 		FROM players p
-		WHERE p.team_id = $1 AND p.status = 'active'
+		WHERE p.team_id = $1 AND p.status IN ('A', '40M')
 		ORDER BY p.position, p.last_name
 	`
 

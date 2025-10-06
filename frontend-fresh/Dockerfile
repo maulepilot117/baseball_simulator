@@ -20,6 +20,9 @@ RUN deno task manifest
 # Build for production
 RUN deno task build
 
+# Copy generated Tailwind CSS to static directory
+RUN cp _fresh/static/styles.css static/styles.css
+
 # Expose port
 EXPOSE 8000
 
